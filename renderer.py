@@ -63,13 +63,11 @@ def draw_cards(surface, center_x, center_y, card_offset, category_idx,
     stride = int(base_w * gui_scale) + int(base_spacing * gui_scale)
     first = max(0, int((-card_offset - window_width // 2) / stride) - 1)
     last = min(CARD_COUNT, int((-card_offset + window_width // 2) / stride) + 2)
-    # non-selected first
     for i in range(first, last):
         x, y = int(center_x + i * stride + card_offset), int(center_y)
         if not (selected_card == i and selected_category == category_idx):
             rects.append((draw_app_icon(surface, names[i], x, y, base_w, base_h,
                                         False, 1.0, gui_scale), i, category_idx))
-    # selected on top
     for i in range(first, last):
         x, y = int(center_x + i * stride + card_offset), int(center_y)
         if selected_card == i and selected_category == category_idx:
@@ -95,10 +93,8 @@ def draw_wheel(surface, state, window_width, window_height):
         rr = r + int(15 * s) + i * int(10 * s)
         pygame.draw.circle(buf, (*white, 100 - i * 20), (m, m), rr, max(1, int(2 * s)))
     surface.blit(buf, (cx - margin, cy - margin))
-
     pygame.draw.circle(surface, white, (cx, cy), r, max(1, int(4 * s)))
     pygame.draw.circle(surface, white, (cx, cy), r - int(20 * s), max(1, int(2 * s)))
-
     segs = 48
     prog = int((state.wheel_angle / (2 * math.pi)) * segs) % segs
     ir = r - int(10 * s)
@@ -109,14 +105,12 @@ def draw_wheel(surface, state, window_width, window_height):
                          (cx + int(ir * math.cos(sa)), cy + int(ir * math.sin(sa))),
                          (cx + int(ir * math.cos(ea)), cy + int(ir * math.sin(ea))),
                          max(1, int(6 * s)))
-
     pl = r - int(30 * s)
     px = cx + int(pl * math.cos(state.wheel_angle))
     py = cy + int(pl * math.sin(state.wheel_angle))
     pygame.draw.line(surface, white, (cx, cy), (px, py), max(1, int(3 * s)))
     pygame.draw.circle(surface, white, (px, py), max(2, int(6 * s)))
     pygame.draw.circle(surface, white, (cx, cy), max(2, int(8 * s)))
-
     font = get_font(max(18, int(40 * s)))
     t = font.render(f"GUI {state.gui_scale:.2f}x", True, white)
     tr = t.get_rect(center=(cx, cy + r + int(44 * s)))
@@ -125,3 +119,134 @@ def draw_wheel(surface, state, window_width, window_height):
     pygame.draw.rect(surface, (20, 20, 20), bg)
     pygame.draw.rect(surface, white, bg, max(1, int(2 * s)))
     surface.blit(t, tr)
+
+
+# ==============================
+# Skeleton thumbnail
+# ==============================
+
+# MediaPipe hand bone connections
+_HAND_CONNECTIONS = [
+    (0, 1), (1, 2), (2, 3), (3, 4),        # thumb
+    (0, 5), (5, 6), (6, 7), (7, 8),        # index
+    (0, 9), (9, 10), (10, 11), (11, 12),   # middle
+    (0, 13), (13, 14), (14, 15), (15, 16), # ring
+    (0, 17), (17, 18), (18, 19), (19, 20), # pinky
+    (5, 9), (9, 13), (13, 17),             # palm knuckle bar
+]
+
+# Finger tip landmark indices, used to colour fingertips differently
+_FINGERTIPS = {4, 8, 12, 16, 20}
+
+_THUMB_COLOR  = (255, 180,  60)   # orange
+_FINGER_COLOR = ( 80, 200, 255)   # cyan
+_PALM_COLOR   = (160, 160, 200)   # muted purple-grey
+_TIP_COLOR    = (255, 255, 100)   # bright yellow dots
+
+
+def draw_skeleton_thumbnail(surface, landmarks, x=None, y=None,
+                             w=220, h=165, window_width=1600, window_height=900,
+                             margin=10):
+    """
+    Draw a skeleton-only hand thumbnail in the upper-right corner (or at x,y).
+
+    landmarks — list of 21 _Landmark objects from HandTracker.latest(), or None.
+    No camera image is drawn — just a black panel with coloured bones.
+    """
+    if x is None:
+        x = window_width - w - margin
+    if y is None:
+        y = margin
+
+    panel = pygame.Rect(x, y, w, h)
+
+    # Semi-transparent background
+    bg = pygame.Surface((w, h), pygame.SRCALPHA)
+    bg.fill((10, 10, 18, 210))
+    surface.blit(bg, (x, y))
+
+    # Border
+    pygame.draw.rect(surface, (70, 70, 100), panel, width=2, border_radius=8)
+
+    # Label
+    lbl = get_font(18).render("hand cam", True, (80, 80, 110))
+    surface.blit(lbl, (x + 6, y + 4))
+
+    if landmarks is None:
+        msg = get_font(18).render("no hand", True, (70, 70, 90))
+        surface.blit(msg, msg.get_rect(center=(x + w // 2, y + h // 2)))
+        return
+
+    # Map normalised landmark coords into the thumbnail rect.
+    # Landmarks are already in [0..1] range (mirrored by OpenCV flip).
+    pad = 18  # pixels of breathing room inside the panel
+
+    def lm_xy(lm):
+        px = x + pad + lm.x * (w - pad * 2)
+        py = y + pad + lm.y * (h - pad * 2)
+        return int(px), int(py)
+
+    # Draw bones
+    for a, b in _HAND_CONNECTIONS:
+        pa, pb = lm_xy(landmarks[a]), lm_xy(landmarks[b])
+        # Palm bar and thumb get a different tint
+        if a in (5, 9, 13) and b in (9, 13, 17):
+            color = _PALM_COLOR
+        elif a <= 4 or b <= 4:
+            color = _THUMB_COLOR
+        else:
+            color = _FINGER_COLOR
+        pygame.draw.line(surface, color, pa, pb, 2)
+
+    # Draw joint dots
+    for i, lm in enumerate(landmarks):
+        px, py = lm_xy(lm)
+        if i in _FINGERTIPS:
+            pygame.draw.circle(surface, _TIP_COLOR, (px, py), 4)
+        elif i == 0:
+            pygame.draw.circle(surface, _PALM_COLOR, (px, py), 4)
+        else:
+            pygame.draw.circle(surface, _FINGER_COLOR, (px, py), 2)
+# ==============================
+# Camera thumbnail
+# ==============================
+import cv2
+
+_CAM_THUMB_W = 200
+_CAM_THUMB_H = 150
+_CAM_THUMB_MARGIN = 12
+
+
+def draw_camera_thumbnail(surface, frame, window_width):
+    """Draw camera feed in top-right corner."""
+    if frame is None:
+        return
+    thumb = cv2.resize(frame, (_CAM_THUMB_W, _CAM_THUMB_H))
+    thumb_surface = pygame.surfarray.make_surface(thumb.swapaxes(0, 1))
+    x = window_width - _CAM_THUMB_W - _CAM_THUMB_MARGIN
+    y = _CAM_THUMB_MARGIN
+    border = pygame.Rect(x - 2, y - 2, _CAM_THUMB_W + 4, _CAM_THUMB_H + 4)
+    pygame.draw.rect(surface, (255, 255, 255), border, 2, border_radius=4)
+    surface.blit(thumb_surface, (x, y))
+
+# ==============================
+# Camera thumbnail
+# ==============================
+import cv2
+
+_CAM_THUMB_W = 200
+_CAM_THUMB_H = 150
+_CAM_THUMB_MARGIN = 12
+
+
+def draw_camera_thumbnail(surface, frame, window_width):
+    """Draw camera feed in top-right corner."""
+    if frame is None:
+        return
+    thumb = cv2.resize(frame, (_CAM_THUMB_W, _CAM_THUMB_H))
+    thumb_surface = pygame.surfarray.make_surface(thumb.swapaxes(0, 1))
+    x = window_width - _CAM_THUMB_W - _CAM_THUMB_MARGIN
+    y = _CAM_THUMB_MARGIN
+    border = pygame.Rect(x - 2, y - 2, _CAM_THUMB_W + 4, _CAM_THUMB_H + 4)
+    pygame.draw.rect(surface, (255, 255, 255), border, 2, border_radius=4)
+    surface.blit(thumb_surface, (x, y))

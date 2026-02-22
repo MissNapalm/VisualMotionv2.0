@@ -16,7 +16,7 @@ from state import (
     HandState, CARD_COUNT, CARD_WIDTH, CARD_HEIGHT, CARD_SPACING,
     ROW_BASE_SPACING, CATEGORIES, NUM_CATEGORIES, WINDOW_WIDTH, WINDOW_HEIGHT,
 )
-from renderer import clamp, draw_cards, draw_wheel, draw_camera_thumbnail
+from renderer import clamp, draw_cards, draw_wheel
 from weather_window import WeatherWindow
 from todo_window import TodoWindow
 
@@ -214,10 +214,6 @@ class App:
 
         self._resolve_taps(all_rects)
         draw_wheel(screen, st, WINDOW_WIDTH, WINDOW_HEIGHT)
-
-        # Camera thumbnail top-right
-        frame = self.tracker.latest_frame()
-        draw_camera_thumbnail(screen, frame, WINDOW_WIDTH)
 
         if hand:
             (tx, ty), (ix, iy) = st.finger_smoother.update(
