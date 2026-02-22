@@ -28,6 +28,7 @@ CONCRETE = 5
 GUNPOWDER = 6
 NAPALM = 7
 GASOLINE = 8
+WATER = 9
 
 _WOOD_COLOR = (139, 90, 43)
 _WOOD_COLORS = [(139, 90, 43), (120, 75, 35), (160, 105, 50), (110, 70, 30)]
@@ -35,6 +36,7 @@ _CONCRETE_COLOR = (140, 140, 145)
 _GUNPOWDER_COLORS = [(80, 80, 80), (60, 60, 60), (40, 40, 40), (100, 100, 100), (30, 30, 30)]
 _NAPALM_COLORS = [(255, 60, 0), (255, 100, 0), (255, 40, 20), (200, 50, 0), (255, 120, 30)]
 _GASOLINE_COLORS = [(180, 200, 50), (160, 180, 40), (200, 210, 60), (140, 170, 30), (190, 190, 55)]
+_WATER_COLORS = [(30, 100, 220), (40, 120, 240), (20, 80, 200), (50, 130, 255), (35, 110, 230)]
 
 _FUN_COLORS = [
     (255, 69, 0), (255, 105, 180), (255, 255, 0),
@@ -107,6 +109,10 @@ class _Gnome:
             if not self.on_fire:
                 self.on_fire = True
                 self.fire_start_time = time.time()
+
+        # Water puts out a burning gnome
+        if self.on_fire and 0 <= ix < w and 0 <= iy < h and grid[iy, ix] == WATER:
+            self.on_fire = False
 
         # Die after 7 seconds on fire
         if self.on_fire and (time.time() - self.fire_start_time) > 7.0:
@@ -215,8 +221,8 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False):
     c = state.colors
     h, w = g.shape
 
-    # Find all falling particles: sand, gunpowder, gasoline
-    falling = (g == HEAVY) | (g == GUNPOWDER) | (g == GASOLINE)
+    # Find all falling particles: sand, gunpowder, gasoline, water
+    falling = (g == HEAVY) | (g == GUNPOWDER) | (g == GASOLINE) | (g == WATER)
     if not np.any(falling):
         return
 
@@ -236,12 +242,12 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False):
     for i in range(len(ys)):
         y, x = int(ys[i]), int(xs[i])
         ptype = g[y, x]
-        if ptype not in (HEAVY, GUNPOWDER, GASOLINE):
+        if ptype not in (HEAVY, GUNPOWDER, GASOLINE, WATER):
             continue  # already moved by another particle this step
         col = c[y, x].copy()
 
-        # Gasoline is more fluid — higher lateral slide chance
-        slide_chance = 0.7 if ptype == GASOLINE else 0.3
+        # Gasoline and water are more fluid — higher lateral slide chance
+        slide_chance = 0.7 if ptype in (GASOLINE, WATER) else 0.3
 
         ny = y + grav
         moved = False
@@ -346,11 +352,18 @@ def _step_fire(state):
 
         # Consume neighbors — spread to adjacent flammable cells
         # CONCRETE is fireproof.  WOOD burns slowly.  HEAVY/STATIC burn faster.
+        # WATER extinguishes fire on contact.
+        extinguished = False
         for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, -1), (-1, 1), (1, 1)]:
             nx, ny2 = x + dx, y + dy
             if 0 <= nx < w and 0 <= ny2 < h:
                 cell = g[ny2, nx]
-                if cell == WOOD:
+                if cell == WATER:
+                    # Water extinguishes this fire particle
+                    g[y, x] = EMPTY
+                    extinguished = True
+                    break
+                elif cell == WOOD:
                     if random.random() < 0.018:      # wood burns moderate
                         g[ny2, nx] = FIRE
                         c[ny2, nx] = random.choice(_FIRE_COLORS)
@@ -366,6 +379,8 @@ def _step_fire(state):
                     g[ny2, nx] = FIRE
                     c[ny2, nx] = random.choice(_FIRE_COLORS)
                 # CONCRETE: never catches fire
+        if extinguished:
+            continue
 
         # Fire rises upward (opposite of sand)
         ny = y - 1
@@ -434,11 +449,17 @@ def _step_napalm(state):
         col = tuple(random.choice(_NAPALM_COLORS))
 
         # Spread fire to neighbors just like regular fire
+        # WATER extinguishes napalm on contact.
+        extinguished = False
         for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, -1), (-1, 1), (1, 1)]:
             nx, ny2 = x + dx, y + dy
             if 0 <= nx < w and 0 <= ny2 < h:
                 cell = g[ny2, nx]
-                if cell == WOOD:
+                if cell == WATER:
+                    g[y, x] = EMPTY
+                    extinguished = True
+                    break
+                elif cell == WOOD:
                     if random.random() < 0.018:
                         g[ny2, nx] = FIRE
                         c[ny2, nx] = random.choice(_FIRE_COLORS)
@@ -451,6 +472,8 @@ def _step_napalm(state):
                 elif cell == GASOLINE:
                     g[ny2, nx] = FIRE
                     c[ny2, nx] = random.choice(_FIRE_COLORS)
+        if extinguished:
+            continue
 
         # Napalm FALLS downward (like sand, but fire)
         ny = y + 1
@@ -557,6 +580,7 @@ class SandWindow:
     MODE_GUNPOWDER = 8
     MODE_NAPALM = 9
     MODE_GASOLINE = 10
+    MODE_WATER = 11
 
     def __init__(self, window_width, window_height):
         self.visible = False
@@ -616,6 +640,8 @@ class SandWindow:
                                    color=(120, 30, 0), active_color=(255, 60, 0)); x += bw + margin
         self._btn_gasoline = _Button(x, row2_y, bw, bh, "GAS", font_size=32,
                                      color=(70, 80, 20), active_color=(200, 220, 60)); x += bw + margin
+        self._btn_water = _Button(x, row2_y, bw, bh, "WATER", font_size=30,
+                                  color=(15, 50, 120), active_color=(40, 130, 255)); x += bw + margin
 
         quit_h = bh * 2 + margin
         self._btn_quit = _Button(self._ww - bw - margin, row1_y, bw, quit_h, "QUIT",
@@ -625,7 +651,7 @@ class SandWindow:
             self._btn_pour, self._btn_wall, self._btn_wood, self._btn_concrete,
             self._btn_erase, self._btn_color,
             self._btn_gnome, self._btn_fire, self._btn_gunpowder, self._btn_napalm,
-            self._btn_gasoline,
+            self._btn_gasoline, self._btn_water,
             self._btn_wind, self._btn_wind_dir, self._btn_gravity, self._btn_clear,
             self._btn_fill,
             self._btn_quit,
@@ -668,6 +694,7 @@ class SandWindow:
         self._btn_gunpowder.active = (self._mode == self.MODE_GUNPOWDER)
         self._btn_napalm.active = (self._mode == self.MODE_NAPALM)
         self._btn_gasoline.active = (self._mode == self.MODE_GASOLINE)
+        self._btn_water.active = (self._mode == self.MODE_WATER)
         self._btn_fill.active = (self._mode == self.MODE_FILL)
         # Show what material fill will use
         _fill_names = {
@@ -675,6 +702,7 @@ class SandWindow:
             self.MODE_WOOD: "FILL:Wd", self.MODE_CONCRETE: "FILL:C",
             self.MODE_FIRE: "FILL:F", self.MODE_GUNPOWDER: "FILL:GP",
             self.MODE_NAPALM: "FILL:N", self.MODE_GASOLINE: "FILL:G",
+            self.MODE_WATER: "FILL:Wt",
         }
         self._btn_fill.label = _fill_names.get(self._fill_material, "FILL")
         self._btn_wind.active = self._wind_active
@@ -719,6 +747,8 @@ class SandWindow:
             ptype, color_fn = NAPALM, lambda: random.choice(_NAPALM_COLORS)
         elif mat == self.MODE_GASOLINE:
             ptype, color_fn = GASOLINE, lambda: random.choice(_GASOLINE_COLORS)
+        elif mat == self.MODE_WATER:
+            ptype, color_fn = WATER, lambda: random.choice(_WATER_COLORS)
         else:
             ptype, color_fn = HEAVY, lambda: self._color
 
@@ -786,6 +816,10 @@ class SandWindow:
             self._mode = self.MODE_GASOLINE
             self._fill_material = self.MODE_GASOLINE
             self._update_button_states(); return
+        if self._btn_water.hit(px, py):
+            self._mode = self.MODE_WATER
+            self._fill_material = self.MODE_WATER
+            self._update_button_states(); return
         if self._btn_fill.hit(px, py):
             self._mode = self.MODE_FILL
             self._update_button_states(); return
@@ -846,6 +880,11 @@ class SandWindow:
                     rx = gx + random.randint(-5, 5)
                     ry = gy + random.randint(-5, 2)
                     self._state.add(GASOLINE, rx, ry, random.choice(_GASOLINE_COLORS))
+            elif self._mode == self.MODE_WATER:
+                for _ in range(25):
+                    rx = gx + random.randint(-5, 5)
+                    ry = gy + random.randint(-5, 2)
+                    self._state.add(WATER, rx, ry, random.choice(_WATER_COLORS))
             elif self._mode == self.MODE_FILL:
                 self._flood_fill(gx, gy)
 
@@ -946,6 +985,13 @@ class SandWindow:
                 rx = gx + random.randint(-3, 3)
                 ry = gy + random.randint(-2, 1)
                 self._state.add(GASOLINE, rx, ry, random.choice(_GASOLINE_COLORS))
+            self._last_wall_gx = None
+            self._last_wall_gy = None
+        elif self._mode == self.MODE_WATER:
+            for _ in range(10):
+                rx = gx + random.randint(-3, 3)
+                ry = gy + random.randint(-2, 1)
+                self._state.add(WATER, rx, ry, random.choice(_WATER_COLORS))
             self._last_wall_gx = None
             self._last_wall_gy = None
         elif self._mode == self.MODE_FILL:
