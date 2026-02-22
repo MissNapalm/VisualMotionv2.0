@@ -14,13 +14,20 @@ from mediapipe.tasks.python.core import base_options as mp_base_options
 
 
 def _find_model():
-    """Locate hand_landmarker.task inside the mediapipe package."""
+    import mediapipe
+    mp_dir = os.path.dirname(mediapipe.__file__)
+    candidate = os.path.join(mp_dir, 'modules', 'hand_landmark', 'hand_landmarker.task')
+    if os.path.isfile(candidate):
+        return candidate
     for p in sys.path:
-        candidate = os.path.join(p, "mediapipe", "modules", "hand_landmark", "hand_landmarker.task")
-        if os.path.isfile(candidate):
-            return candidate
-    raise FileNotFoundError("Could not find hand_landmarker.task model in mediapipe package.")
-
+        c2 = os.path.join(p, 'mediapipe', 'modules', 'hand_landmark', 'hand_landmarker.task')
+        if os.path.isfile(c2):
+            return c2
+    proj = os.path.dirname(os.path.abspath(__file__))
+    c3 = os.path.join(proj, 'hand_landmarker.task')
+    if os.path.isfile(c3):
+        return c3
+    raise FileNotFoundError('Could not find hand_landmarker.task')
 
 class _Landmark:
     __slots__ = ("x", "y", "z")

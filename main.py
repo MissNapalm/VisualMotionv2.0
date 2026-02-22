@@ -19,6 +19,7 @@ from state import (
 from renderer import clamp, draw_cards, draw_wheel, draw_camera_thumbnail
 from weather_window import WeatherWindow
 from todo_window import TodoWindow
+from sand_window import SandWindow
 
 
 class App:
@@ -36,10 +37,11 @@ class App:
         self._double_tap = None
         self._weather = WeatherWindow(WINDOW_WIDTH, WINDOW_HEIGHT)
         self._todo = TodoWindow(WINDOW_WIDTH, WINDOW_HEIGHT)
+        self._sand = SandWindow(WINDOW_WIDTH, WINDOW_HEIGHT)
 
     @property
     def _any_app_visible(self):
-        return self._weather.visible or self._todo.visible
+        return self._weather.visible or self._todo.visible or self._sand.visible
 
     def _process_wheel(self, hand):
         st = self.state
@@ -83,20 +85,21 @@ class App:
                 st.scroll_unlocked = False
         elif pinch_now and st.pinch_prev and pos:
             px, py = pos[0] * WINDOW_WIDTH, pos[1] * WINDOW_HEIGHT
+            px, py = st.pinch_smoother.update(px, py)
             if st.last_pinch_x is not None:
                 dx, dy = px - st.last_pinch_x, py - st.last_pinch_y
 
-                # Dead zone — suppress jitter when holding still.
-                # Use a larger threshold when not yet scrolling, smaller once moving.
+                # Soft dead zone — scale down small movements instead of killing them
                 if st.pinch_start_pos:
                     total_drift = math.hypot(px - st.pinch_start_pos[0], py - st.pinch_start_pos[1])
-                    jitter_thresh = 8 if total_drift < st.movement_threshold else 4
+                    jitter_thresh = 6 if total_drift < st.movement_threshold else 3
                 else:
-                    jitter_thresh = 8
-                if abs(dx) < jitter_thresh:
-                    dx = 0
-                if abs(dy) < jitter_thresh:
-                    dy = 0
+                    jitter_thresh = 6
+                adx, ady = abs(dx), abs(dy)
+                if adx < jitter_thresh:
+                    dx *= (adx / jitter_thresh) ** 2
+                if ady < jitter_thresh:
+                    dy *= (ady / jitter_thresh) ** 2
 
                 if not st.scroll_unlocked:
                     if time.time() - st.pinch_hold_start >= st.pinch_hold_delay:
@@ -104,7 +107,8 @@ class App:
 
                 # Pinch-hold 1s to close app windows (generous drift allowance)
                 # Skip if todo keyboard is open (user is typing)
-                if self._any_app_visible and st.pinch_start_pos:
+                # Skip if Sand is open (Sand uses quit button only)
+                if self._any_app_visible and not self._sand.visible and st.pinch_start_pos:
                     if not (self._todo.visible and self._todo._keyboard_open):
                         total = math.hypot(px - st.pinch_start_pos[0], py - st.pinch_start_pos[1])
                         if total <= 80 and time.time() - st.pinch_hold_start >= 1.0:
@@ -116,6 +120,12 @@ class App:
                                 print("Closed todo window (pinch hold)")
                             st.reset_pinch()
                             return
+
+                # Feed pinch to Sand app (pour/draw/erase)
+                if self._sand.visible and st.pinch_start_pos:
+                    total = math.hypot(px - st.pinch_start_pos[0], py - st.pinch_start_pos[1])
+                    if total > 15:  # small dead zone
+                        self._sand.handle_pinch(px, py)
 
                 # Only scroll when no app window is open
                 if not self._any_app_visible and st.scroll_unlocked and st.pinch_start_pos:
@@ -153,6 +163,8 @@ class App:
                 if not self._weather.hit_test(tx, ty, st.gui_scale):
                     self._weather.close()
                     print("Closed weather window")
+            elif self._sand.visible:
+                self._sand.handle_tap(tx, ty)
             else:
                 for rect, ci, ca in all_rects:
                     if rect.collidepoint(tx, ty):
@@ -181,6 +193,9 @@ class App:
                         elif name == "Reminders":
                             self._todo.open()
                             print("Opened todo window")
+                        elif name == "Sand":
+                            self._sand.open()
+                            print("Opened Sand")
                         else:
                             print(f"Double pinch on {name}")
                         break
@@ -192,7 +207,9 @@ class App:
         screen.fill((20, 20, 30))
 
         all_rects = []
-        if self._todo.visible:
+        if self._sand.visible:
+            self._sand.draw(screen, st.gui_scale)
+        elif self._todo.visible:
             self._todo.draw(screen, st.gui_scale)
         elif self._weather.visible:
             self._weather.draw(screen, st.gui_scale)
@@ -256,6 +273,9 @@ class App:
             else:
                 pinch_now = is_pinching(hand, st.pinch_threshold)
                 self._process_wheel(hand)
+                # Three-finger gesture in Sand = change color
+                if self._sand.visible and is_three_finger(hand):
+                    self._sand.random_color()
                 self._process_pinch(hand, pinch_now)
             st.pinch_prev = pinch_now
             self._draw(hand, pinch_now)
