@@ -208,7 +208,7 @@ def draw_skeleton_thumbnail(surface, landmarks, x=None, y=None,
         else:
             pygame.draw.circle(surface, _FINGER_COLOR, (px, py), 2)
 # ==============================
-# Camera thumbnail
+# Camera thumbnail (privacy — skeleton only, no video feed)
 # ==============================
 import cv2
 
@@ -217,36 +217,40 @@ _CAM_THUMB_H = 150
 _CAM_THUMB_MARGIN = 12
 
 
-def draw_camera_thumbnail(surface, frame, window_width):
-    """Draw camera feed in top-right corner."""
-    if frame is None:
-        return
-    thumb = cv2.resize(frame, (_CAM_THUMB_W, _CAM_THUMB_H))
-    thumb_surface = pygame.surfarray.make_surface(thumb.swapaxes(0, 1))
+def draw_camera_thumbnail(surface, frame, window_width, landmarks=None):
+    """Privacy mode: black panel with white wireframe skeleton, no camera feed."""
     x = window_width - _CAM_THUMB_W - _CAM_THUMB_MARGIN
     y = _CAM_THUMB_MARGIN
+
+    thumb_surface = pygame.Surface((_CAM_THUMB_W, _CAM_THUMB_H))
+    thumb_surface.fill((10, 10, 18))
+
+    if landmarks:
+        for a, b in _HAND_CONNECTIONS:
+            ax = int(landmarks[a].x * _CAM_THUMB_W)
+            ay = int(landmarks[a].y * _CAM_THUMB_H)
+            bx = int(landmarks[b].x * _CAM_THUMB_W)
+            by = int(landmarks[b].y * _CAM_THUMB_H)
+            if a in (5, 9, 13) and b in (9, 13, 17):
+                color = _PALM_COLOR
+            elif a <= 4 or b <= 4:
+                color = _THUMB_COLOR
+            else:
+                color = _FINGER_COLOR
+            pygame.draw.line(thumb_surface, color, (ax, ay), (bx, by), 2)
+        for i, lm in enumerate(landmarks):
+            px = int(lm.x * _CAM_THUMB_W)
+            py = int(lm.y * _CAM_THUMB_H)
+            if i in _FINGERTIPS:
+                pygame.draw.circle(thumb_surface, _TIP_COLOR, (px, py), 4)
+            elif i == 0:
+                pygame.draw.circle(thumb_surface, _PALM_COLOR, (px, py), 4)
+            else:
+                pygame.draw.circle(thumb_surface, _FINGER_COLOR, (px, py), 2)
+    else:
+        msg = get_font(18).render("no hand", True, (70, 70, 90))
+        thumb_surface.blit(msg, msg.get_rect(center=(_CAM_THUMB_W // 2, _CAM_THUMB_H // 2)))
+
     border = pygame.Rect(x - 2, y - 2, _CAM_THUMB_W + 4, _CAM_THUMB_H + 4)
-    pygame.draw.rect(surface, (255, 255, 255), border, 2, border_radius=4)
-    surface.blit(thumb_surface, (x, y))
-
-# ==============================
-# Camera thumbnail
-# ==============================
-import cv2
-
-_CAM_THUMB_W = 200
-_CAM_THUMB_H = 150
-_CAM_THUMB_MARGIN = 12
-
-
-def draw_camera_thumbnail(surface, frame, window_width):
-    """Draw camera feed in top-right corner."""
-    if frame is None:
-        return
-    thumb = cv2.resize(frame, (_CAM_THUMB_W, _CAM_THUMB_H))
-    thumb_surface = pygame.surfarray.make_surface(thumb.swapaxes(0, 1))
-    x = window_width - _CAM_THUMB_W - _CAM_THUMB_MARGIN
-    y = _CAM_THUMB_MARGIN
-    border = pygame.Rect(x - 2, y - 2, _CAM_THUMB_W + 4, _CAM_THUMB_H + 4)
-    pygame.draw.rect(surface, (255, 255, 255), border, 2, border_radius=4)
+    pygame.draw.rect(surface, (70, 70, 100), border, 2, border_radius=4)
     surface.blit(thumb_surface, (x, y))

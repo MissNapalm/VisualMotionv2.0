@@ -90,9 +90,9 @@ class App:
                 # Use a larger threshold when not yet scrolling, smaller once moving.
                 if st.pinch_start_pos:
                     total_drift = math.hypot(px - st.pinch_start_pos[0], py - st.pinch_start_pos[1])
-                    jitter_thresh = 6 if total_drift < st.movement_threshold else 4
+                    jitter_thresh = 8 if total_drift < st.movement_threshold else 4
                 else:
-                    jitter_thresh = 6
+                    jitter_thresh = 8
                 if abs(dx) < jitter_thresh:
                     dx = 0
                 if abs(dy) < jitter_thresh:
@@ -217,7 +217,7 @@ class App:
 
         # Camera thumbnail top-right
         frame = self.tracker.latest_frame()
-        draw_camera_thumbnail(screen, frame, WINDOW_WIDTH)
+        draw_camera_thumbnail(screen, frame, WINDOW_WIDTH, hand)
 
         if hand:
             (tx, ty), (ix, iy) = st.finger_smoother.update(
@@ -226,8 +226,8 @@ class App:
             )
             if not st.wheel_active and pinch_now:
                 pygame.draw.line(screen, (255, 255, 255), (int(tx), int(ty)), (int(ix), int(iy)), 2)
-            pygame.draw.circle(screen, (255, 255, 255), (int(tx), int(ty)), 8)
-            pygame.draw.circle(screen, (255, 255, 255), (int(ix), int(iy)), 8)
+            pygame.draw.circle(screen, (255, 255, 255), (int(tx), int(ty)), 10)
+            pygame.draw.circle(screen, (150, 150, 150), (int(ix), int(iy)), 5)
         else:
             st.finger_smoother.reset()
         pygame.display.flip()
