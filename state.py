@@ -125,7 +125,7 @@ class HandState:
         self.last_pinch_y = None
         self.pinch_start_pos = None
         self.movement_threshold = 40        # dead zone before scroll starts
-        self.pinch_threshold = 0.06
+        self.pinch_threshold = 0.04
         self.pinch_prev = False
         self.last_pinch_time = 0
         self.double_pinch_window = 0.4

@@ -37,6 +37,12 @@ class App:
         except Exception:
             self._snd_select = None
             print("Warning: select.mp3 not found")
+        try:
+            self._snd_doublepinch = pygame.mixer.Sound("doublepinch.mp3")
+            self._snd_doublepinch.set_volume(0.5)
+        except Exception:
+            self._snd_doublepinch = None
+            print("Warning: doublepinch.mp3 not found")
         self.state = HandState()
         self.tracker = HandTracker()
         self._font_status = pygame.font.Font(None, 48)
@@ -176,10 +182,11 @@ class App:
                 for rect, ci, ca in all_rects:
                     if rect.collidepoint(tx, ty):
                         name = CATEGORIES[ca][ci]
+                        if ci != st.selected_card or ca != st.selected_category:
+                            if self._snd_select:
+                                self._snd_select.play()
                         st.selected_card, st.selected_category = ci, ca
                         st.zoom_target = 1.0
-                        if self._snd_select:
-                            self._snd_select.play()
                         print(f"Selected: {name} (card {ci}, category {ca})")
                         break
             self._tap = None
@@ -198,14 +205,22 @@ class App:
                         name = CATEGORIES[ca][ci]
                         if name == "Weather":
                             self._weather.open()
+                            if self._snd_doublepinch:
+                                self._snd_doublepinch.play()
                             print("Opened weather window")
                         elif name == "Reminders":
                             self._todo.open()
+                            if self._snd_doublepinch:
+                                self._snd_doublepinch.play()
                             print("Opened todo window")
                         elif name == "Sand":
                             self._sand.open()
+                            if self._snd_doublepinch:
+                                self._snd_doublepinch.play()
                             print("Opened Sand")
                         else:
+                            if self._snd_doublepinch:
+                                self._snd_doublepinch.play()
                             print(f"Double pinch on {name}")
                         break
             self._double_tap = None
