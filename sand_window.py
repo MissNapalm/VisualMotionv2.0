@@ -45,28 +45,27 @@ class _Guy:
         self.dir = 1 if random.random() < 0.5 else -1   # walking direction
         self.grounded = False
         self.walk_timer = 0
-        self.turn_cooldown = 0          # ticks before allowed to turn again
         self.color = random.choice(_GUY_COLORS)
         self.alive = True
 
-    def _try_walk(self, ix, iy, grid):
-        """Try to walk one step in self.dir. Returns True if moved."""
+    def _can_walk(self, ix, iy, direction, grid):
+        """Check if we can walk one step in the given direction.
+        Returns (new_gx, new_gy) or None."""
         h, w = grid.shape
-        next_x = ix + self.dir
-        if 0 <= next_x < w:
-            if grid[iy, next_x] == EMPTY:
-                ahead_below = iy + 1
-                if ahead_below >= h or grid[ahead_below, next_x] != EMPTY:
-                    self.gx = float(next_x)
-                    return True
+        next_x = ix + direction
+        if next_x < 0 or next_x >= w:
+            return None  # edge of world
+        if grid[iy, next_x] == EMPTY:
+            # Space ahead is clear — walk there even if it's a cliff
+            # (guy will fall via gravity next tick)
+            return (float(next_x), float(iy))
+        else:
+            # Blocked — try climbing 1 cell
+            climb_y = iy - 1
+            if climb_y >= 0 and grid[climb_y, next_x] == EMPTY:
+                return (float(next_x), float(climb_y))
             else:
-                # Blocked — try to climb 1 cell
-                climb_y = iy - 1
-                if climb_y >= 0 and grid[climb_y, next_x] == EMPTY:
-                    self.gx = float(next_x)
-                    self.gy = float(climb_y)
-                    return True
-        return False
+                return None  # can't climb
 
     def step(self, grid):
         h, w = grid.shape
@@ -88,24 +87,25 @@ class _Guy:
         if on_ground:
             self.vy = 0.0
             self.grounded = True
-            # Snap to surface
             self.gy = float(iy)
 
             # --- walking ---
-            if self.turn_cooldown > 0:
-                self.turn_cooldown -= 1
-
             self.walk_timer += 1
             if self.walk_timer >= 3:   # walk every 3 ticks
                 self.walk_timer = 0
 
-                if self._try_walk(ix, iy, grid):
-                    pass  # moved successfully
-                elif self.turn_cooldown <= 0:
-                    # Can't move forward — turn around and try
+                # Try current direction
+                result = self._can_walk(ix, iy, self.dir, grid)
+                if result:
+                    self.gx, self.gy = result
+                else:
+                    # Can't go forward — reverse immediately
                     self.dir *= -1
-                    self.turn_cooldown = 10  # don't flip again for 10 ticks
-                    self._try_walk(ix, iy, grid)
+                    # Try the other direction right away
+                    result2 = self._can_walk(ix, iy, self.dir, grid)
+                    if result2:
+                        self.gx, self.gy = result2
+                    # else: stuck on both sides, just stand still
         else:
             # Falling
             self.grounded = False
