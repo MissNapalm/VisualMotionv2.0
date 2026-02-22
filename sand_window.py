@@ -48,6 +48,12 @@ _GNOME_COLORS = [
     (255, 180, 60), (200, 120, 255),
 ]
 
+_HAT_COLORS = [
+    (200, 0, 0), (0, 160, 0), (0, 0, 200),
+    (180, 120, 0), (160, 0, 160), (0, 140, 140),
+    (220, 60, 0), (100, 60, 180),
+]
+
 _FIRE_COLORS = [
     (255, 100, 0), (255, 140, 0), (255, 165, 0),
     (255, 69, 0), (255, 200, 50), (255, 120, 20),
@@ -65,6 +71,7 @@ class _Gnome:
         self.grounded = False
         self.walk_timer = 0
         self.color = random.choice(_GNOME_COLORS)
+        self.hat_color = random.choice(_HAT_COLORS)
         self.alive = True
         self.on_fire = False
         self.fire_start_time = 0.0
@@ -999,6 +1006,13 @@ class SandWindow:
                 c = random.choice([(255, 80, 0), (255, 0, 0), (255, 180, 0)])
             # Head
             pygame.draw.circle(surface, c, (sx, sy - 16), 8)
+            # Hat — pointy gnome hat
+            hat_c = gnome.hat_color if not gnome.on_fire else c
+            pygame.draw.polygon(surface, hat_c, [
+                (sx - 8, sy - 22),      # left brim
+                (sx + 8, sy - 22),      # right brim
+                (sx + gnome.dir * 3, sy - 38),  # pointy tip leans in walk dir
+            ])
             # Body
             pygame.draw.line(surface, c, (sx, sy - 8), (sx, sy + 12), 3)
             # Arms
