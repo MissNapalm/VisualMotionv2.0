@@ -28,6 +28,103 @@ _FUN_COLORS = [
     (255, 255, 153),
 ]
 
+_GUY_COLORS = [
+    (255, 100, 100), (100, 255, 100), (100, 100, 255),
+    (255, 255, 100), (255, 100, 255), (100, 255, 255),
+    (255, 180, 60), (200, 120, 255),
+]
+
+
+class _Guy:
+    """A tiny stick figure that falls with gravity, lands on surfaces, and walks."""
+
+    def __init__(self, gx, gy):
+        self.gx = float(gx)
+        self.gy = float(gy)
+        self.vy = 0.0                   # vertical velocity (grid cells/step)
+        self.dir = 1 if random.random() < 0.5 else -1   # walking direction
+        self.grounded = False
+        self.walk_timer = 0
+        self.turn_cooldown = 0          # ticks before allowed to turn again
+        self.color = random.choice(_GUY_COLORS)
+        self.alive = True
+
+    def _try_walk(self, ix, iy, grid):
+        """Try to walk one step in self.dir. Returns True if moved."""
+        h, w = grid.shape
+        next_x = ix + self.dir
+        if 0 <= next_x < w:
+            if grid[iy, next_x] == EMPTY:
+                ahead_below = iy + 1
+                if ahead_below >= h or grid[ahead_below, next_x] != EMPTY:
+                    self.gx = float(next_x)
+                    return True
+            else:
+                # Blocked — try to climb 1 cell
+                climb_y = iy - 1
+                if climb_y >= 0 and grid[climb_y, next_x] == EMPTY:
+                    self.gx = float(next_x)
+                    self.gy = float(climb_y)
+                    return True
+        return False
+
+    def step(self, grid):
+        h, w = grid.shape
+        ix, iy = int(self.gx), int(self.gy)
+
+        # Off-screen check
+        if ix < 0 or ix >= w or iy >= h:
+            self.alive = False
+            return
+
+        # --- gravity ---
+        below_y = iy + 1
+        on_ground = False
+        if below_y >= h:
+            on_ground = True          # bottom of screen
+        elif grid[below_y, ix] != EMPTY:
+            on_ground = True          # standing on wall or sand
+
+        if on_ground:
+            self.vy = 0.0
+            self.grounded = True
+            # Snap to surface
+            self.gy = float(iy)
+
+            # --- walking ---
+            if self.turn_cooldown > 0:
+                self.turn_cooldown -= 1
+
+            self.walk_timer += 1
+            if self.walk_timer >= 3:   # walk every 3 ticks
+                self.walk_timer = 0
+
+                if self._try_walk(ix, iy, grid):
+                    pass  # moved successfully
+                elif self.turn_cooldown <= 0:
+                    # Can't move forward — turn around and try
+                    self.dir *= -1
+                    self.turn_cooldown = 10  # don't flip again for 10 ticks
+                    self._try_walk(ix, iy, grid)
+        else:
+            # Falling
+            self.grounded = False
+            self.vy = min(self.vy + 0.4, 3.0)   # gravity acceleration, terminal vel
+            new_y = self.gy + self.vy
+            # Check each cell we'd pass through
+            target_y = int(new_y)
+            for check_y in range(iy + 1, min(target_y + 1, h)):
+                if grid[check_y, ix] != EMPTY:
+                    # Land on top of this cell
+                    self.gy = float(check_y - 1)
+                    self.vy = 0.0
+                    self.grounded = True
+                    return
+            if target_y >= h:
+                self.alive = False
+                return
+            self.gy = new_y
+
 
 class _SandState:
     """NumPy grid-based sand sim. Much faster than dict."""
@@ -188,6 +285,7 @@ class SandWindow:
     MODE_POUR = 0
     MODE_WALL = 1
     MODE_ERASE = 2
+    MODE_GUY = 3
 
     def __init__(self, window_width, window_height):
         self.visible = False
@@ -206,6 +304,8 @@ class SandWindow:
         self._last_tick = 0.0
         self._last_wall_gx = None
         self._last_wall_gy = None
+        self._guys = []
+        self._guy_spawned_this_pinch = False
         self._pixel_surf = pygame.Surface((self._gw, self._gh), pygame.SRCALPHA)
         self._buttons = []
         self._build_buttons()
@@ -222,6 +322,7 @@ class SandWindow:
         self._btn_wall = _Button(x, row1_y, bw, bh, "WALL", font_size=34); x += bw + margin
         self._btn_erase = _Button(x, row1_y, bw, bh, "ERASE", font_size=34); x += bw + margin
         self._btn_color = _Button(x, row1_y, bw + 30, bh, "COLOR", font_size=34); x += bw + 30 + margin
+        self._btn_guy = _Button(x, row1_y, bw, bh, "GUY", font_size=34); x += bw + margin
 
         x = margin
         self._btn_wind = _Button(x, row2_y, bw, bh, "WIND", font_size=34); x += bw + margin
@@ -235,6 +336,7 @@ class SandWindow:
 
         self._buttons = [
             self._btn_pour, self._btn_wall, self._btn_erase, self._btn_color,
+            self._btn_guy,
             self._btn_wind, self._btn_wind_dir, self._btn_gravity, self._btn_clear,
             self._btn_quit,
         ]
@@ -252,6 +354,8 @@ class SandWindow:
         self._last_tick = time.time()
         self._last_wall_gx = None
         self._last_wall_gy = None
+        self._guys = []
+        self._guy_spawned_this_pinch = False
         self._update_button_states()
 
     def close(self):
@@ -265,6 +369,7 @@ class SandWindow:
         self._btn_pour.active = (self._mode == self.MODE_POUR)
         self._btn_wall.active = (self._mode == self.MODE_WALL)
         self._btn_erase.active = (self._mode == self.MODE_ERASE)
+        self._btn_guy.active = (self._mode == self.MODE_GUY)
         self._btn_wind.active = self._wind_active
         self._btn_gravity.active = self._reverse_gravity
         self._btn_wind.label = "WIND ON" if self._wind_active else "WIND"
@@ -292,6 +397,9 @@ class SandWindow:
         if self._btn_erase.hit(px, py):
             self._mode = self.MODE_ERASE
             self._update_button_states(); return
+        if self._btn_guy.hit(px, py):
+            self._mode = self.MODE_GUY
+            self._update_button_states(); return
         if self._btn_color.hit(px, py):
             self.random_color()
             self._update_button_states(); return
@@ -305,7 +413,9 @@ class SandWindow:
             self._reverse_gravity = not self._reverse_gravity
             self._update_button_states(); return
         if self._btn_clear.hit(px, py):
-            self._state.clear_all(); return
+            self._state.clear_all()
+            self._guys = []
+            return
         if not self._in_ui_zone(px, py):
             gx, gy = int(px) // _CELL, int(py) // _CELL
             if self._mode == self.MODE_POUR:
@@ -317,6 +427,8 @@ class SandWindow:
                 for dx in range(-1, 2):
                     for dy in range(-1, 2):
                         self._state.add(STATIC, gx + dx, gy + dy, _WALL_COLOR)
+            elif self._mode == self.MODE_GUY:
+                self._guys.append(_Guy(gx, gy))
 
     def handle_pinch(self, px, py):
         if self._in_ui_zone(px, py):
@@ -332,7 +444,11 @@ class SandWindow:
             self._last_wall_gx = None
             self._last_wall_gy = None
         elif self._mode == self.MODE_WALL:
-            if self._last_wall_gx is not None and self._last_wall_gy is not None:
+            # Draw at current position; connect with short bresenham only if
+            # the previous point is close (within 8 cells) to avoid long jumps
+            if (self._last_wall_gx is not None and self._last_wall_gy is not None
+                    and abs(gx - self._last_wall_gx) <= 8
+                    and abs(gy - self._last_wall_gy) <= 8):
                 line_pts = _bresenham(self._last_wall_gx, self._last_wall_gy, gx, gy)
                 for lx, ly in line_pts:
                     for dx in range(-1, 2):
@@ -348,8 +464,16 @@ class SandWindow:
             self._state.erase_circle(gx, gy, 6)
             self._last_wall_gx = None
             self._last_wall_gy = None
+        elif self._mode == self.MODE_GUY:
+            # Don't spawn continuously while pinching — only on first frame
+            if not getattr(self, '_guy_spawned_this_pinch', False):
+                self._guys.append(_Guy(gx, gy))
+                self._guy_spawned_this_pinch = True
+            self._last_wall_gx = None
+            self._last_wall_gy = None
 
     def handle_pinch_end(self):
+        self._guy_spawned_this_pinch = False
         self._last_wall_gx = None
         self._last_wall_gy = None
 
@@ -363,6 +487,10 @@ class SandWindow:
         steps = 0
         while self._sim_accum >= step_dt and steps < 5:
             _step(self._state, self._wind_active, self._wind_dir, self._reverse_gravity)
+            # Step all guys
+            for guy in self._guys:
+                guy.step(self._state.grid)
+            self._guys = [g for g in self._guys if g.alive]
             self._sim_accum -= step_dt
             steps += 1
 
@@ -381,6 +509,31 @@ class SandWindow:
         scaled = pygame.transform.scale(surf_small, (self._ww, self._wh))
         surface.blit(scaled, (0, 0))
 
+        # Draw guys as stick figures (2× size)
+        for guy in self._guys:
+            sx = int(guy.gx * _CELL + _CELL // 2)
+            sy = int(guy.gy * _CELL + _CELL // 2)
+            c = guy.color
+            # Head
+            pygame.draw.circle(surface, c, (sx, sy - 16), 8)
+            # Body
+            pygame.draw.line(surface, c, (sx, sy - 8), (sx, sy + 12), 3)
+            # Arms
+            arm_wave = 4 if guy.grounded and guy.walk_timer == 0 else 0
+            pygame.draw.line(surface, c, (sx - 10, sy + arm_wave), (sx + 10, sy - arm_wave), 3)
+            # Legs — animate walking
+            if guy.grounded:
+                leg_off = 8 if guy.walk_timer == 0 else 4
+                pygame.draw.line(surface, c, (sx, sy + 12), (sx - leg_off, sy + 24), 3)
+                pygame.draw.line(surface, c, (sx, sy + 12), (sx + leg_off, sy + 24), 3)
+            else:
+                # Falling — legs together
+                pygame.draw.line(surface, c, (sx, sy + 12), (sx - 4, sy + 24), 3)
+                pygame.draw.line(surface, c, (sx, sy + 12), (sx + 4, sy + 24), 3)
+            # Direction indicator — eye dot
+            eye_x = sx + (4 * guy.dir)
+            pygame.draw.circle(surface, (255, 255, 255), (eye_x, sy - 18), 2)
+
         # Draw buttons
         self._update_button_states()
         for btn in self._buttons:
@@ -389,7 +542,11 @@ class SandWindow:
         # Particle count
         small = pygame.font.Font(None, 24)
         count = st.count()
-        ct = small.render(f"{count} particles", True, (70, 70, 70))
+        n_guys = len(self._guys)
+        info = f"{count} particles"
+        if n_guys:
+            info += f"  |  {n_guys} guys"
+        ct = small.render(info, True, (70, 70, 70))
         surface.blit(ct, (self._ww - 140, 16))
 
         # Title

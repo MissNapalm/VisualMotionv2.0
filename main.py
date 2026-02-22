@@ -49,7 +49,7 @@ class App:
         self._tap = None
         self._double_tap = None
         self._hand_lost_time = 0          # timestamp when hand was last lost
-        self._hand_grace_period = 0.15    # seconds to keep state alive after losing tracking
+        self._hand_grace_period = 0.30    # seconds to keep state alive after losing tracking
         self._last_hand = None            # last valid hand landmarks
         self._weather = WeatherWindow(WINDOW_WIDTH, WINDOW_HEIGHT)
         self._todo = TodoWindow(WINDOW_WIDTH, WINDOW_HEIGHT)

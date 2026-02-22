@@ -40,7 +40,7 @@ WINDOW_HEIGHT = 800
 # ==============================
 class FingerSmoother:
     """One-pole exponential smoothing — simple, no jitter."""
-    def __init__(self, alpha=0.18):
+    def __init__(self, alpha=0.15):
         self._a = alpha  # lower = heavier smoothing
         self._tx = None
         self._ty = None
@@ -68,7 +68,7 @@ class FingerSmoother:
 
 class PinchSmoother:
     """Smooths pinch coordinates for scroll/interaction."""
-    def __init__(self, alpha=0.25):
+    def __init__(self, alpha=0.20):
         self._a = alpha
         self._x = None
         self._y = None

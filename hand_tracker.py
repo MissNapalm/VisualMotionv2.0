@@ -36,8 +36,8 @@ class _Landmark:
 
 
 class HandTracker:
-    def __init__(self, *, max_hands=1, detection_confidence=0.2,
-                 tracking_confidence=0.2, cam_width=640, cam_height=480):
+    def __init__(self, *, max_hands=1, detection_confidence=0.3,
+                 tracking_confidence=0.3, cam_width=640, cam_height=480):
         model_path = _find_model()
         options = HandLandmarkerOptions(
             base_options=mp_base_options.BaseOptions(model_asset_path=model_path),
@@ -51,7 +51,9 @@ class HandTracker:
         self._cam_height = cam_height
         self._lock = threading.Lock()
         self._landmarks = None
-        self._frame = None          # ← NEW: latest RGB frame (numpy)
+        self._frame = None
+        self._history = []            # last N landmark sets for averaging
+        self._avg_window = 3          # frames to average
         self._running = False
         self._thread = None
         self._cap = None
@@ -92,8 +94,22 @@ class HandTracker:
             landmarks = None
             if result.hand_landmarks:
                 raw = result.hand_landmarks[0]
-                landmarks = [_Landmark(l.x, l.y, l.z) for l in raw]
+                raw_lm = [_Landmark(l.x, l.y, l.z) for l in raw]
+                # Rolling average over last N frames to stabilise jitter
+                self._history.append(raw_lm)
+                if len(self._history) > self._avg_window:
+                    self._history.pop(0)
+                n = len(self._history)
+                avg = []
+                for j in range(21):
+                    ax = sum(h[j].x for h in self._history) / n
+                    ay = sum(h[j].y for h in self._history) / n
+                    az = sum(h[j].z for h in self._history) / n
+                    avg.append(_Landmark(ax, ay, az))
+                landmarks = avg
+            else:
+                self._history.clear()
             with self._lock:
                 self._landmarks = landmarks
-                self._frame = rgb           # ← NEW: store frame under the same lock
+                self._frame = rgb
             time.sleep(0.001)
