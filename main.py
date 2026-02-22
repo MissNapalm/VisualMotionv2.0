@@ -99,6 +99,12 @@ class App:
                 st.is_pinching = True
                 st.pinch_hold_start = time.time()
                 st.scroll_unlocked = False
+                # Immediate button tap for Sand on pinch-down
+                if self._sand.visible and self._sand._in_ui_zone(px, py):
+                    self._sand.handle_tap(px, py)
+                    st._sand_btn_consumed = True
+                else:
+                    st._sand_btn_consumed = False
         elif pinch_now and st.pinch_prev and pos:
             px, py = pos[0] * WINDOW_WIDTH, pos[1] * WINDOW_HEIGHT
             px, py = st.pinch_smoother.update(px, py)
@@ -163,11 +169,18 @@ class App:
                 now = time.time()
                 dt = now - st.last_pinch_time
                 if total <= st.movement_threshold and not st.scroll_unlocked:
-                    self._tap = st.pinch_start_pos
+                    # Sand buttons were already handled on pinch-down
+                    if self._sand.visible and getattr(st, '_sand_btn_consumed', False):
+                        pass  # don't double-fire
+                    else:
+                        self._tap = st.pinch_start_pos
                     if 0.05 < dt < st.double_pinch_window:
                         self._double_tap = st.pinch_start_pos
                 st.last_pinch_time = now
             st.reset_pinch()
+            # Also end sand pinch tracking
+            if self._sand.visible:
+                self._sand.handle_pinch_end()
 
     def _resolve_taps(self, all_rects):
         st = self.state

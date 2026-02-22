@@ -104,14 +104,14 @@ class HandState:
         self.last_pinch_x = None
         self.last_pinch_y = None
         self.pinch_start_pos = None
-        self.movement_threshold = 40        # dead zone before scroll starts
+        self.movement_threshold = 55        # dead zone before scroll starts
         self.pinch_threshold = 0.06
         self.pinch_prev = False
         self.last_pinch_time = 0
         self.double_pinch_window = 0.4
         self.pinch_hold_start = 0
         self.scroll_unlocked = False
-        self.pinch_hold_delay = 0.12
+        self.pinch_hold_delay = 0.18
 
         # selection
         self.selected_card = None

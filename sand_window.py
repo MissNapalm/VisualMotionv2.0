@@ -369,7 +369,9 @@ class _Button:
             pygame.draw.rect(surface, _WHITE, sw, 1, border_radius=5)
 
     def hit(self, px, py):
-        return self.rect.collidepoint(int(px), int(py))
+        # Inflated hit area (10px padding) for easier gesture targeting
+        expanded = self.rect.inflate(20, 20)
+        return expanded.collidepoint(int(px), int(py))
 
 
 class SandWindow:
