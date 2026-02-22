@@ -21,6 +21,7 @@ _BTN_ACTIVE = (80, 255, 180)
 EMPTY = 0
 STATIC = 1
 HEAVY = 2
+FIRE = 3
 
 _FUN_COLORS = [
     (255, 69, 0), (255, 105, 180), (255, 255, 0),
@@ -28,14 +29,19 @@ _FUN_COLORS = [
     (255, 255, 153),
 ]
 
-_GUY_COLORS = [
+_GNOME_COLORS = [
     (255, 100, 100), (100, 255, 100), (100, 100, 255),
     (255, 255, 100), (255, 100, 255), (100, 255, 255),
     (255, 180, 60), (200, 120, 255),
 ]
 
+_FIRE_COLORS = [
+    (255, 100, 0), (255, 140, 0), (255, 165, 0),
+    (255, 69, 0), (255, 200, 50), (255, 120, 20),
+]
 
-class _Guy:
+
+class _Gnome:
     """A tiny stick figure that falls with gravity, lands on surfaces, and walks."""
 
     def __init__(self, gx, gy):
@@ -45,8 +51,10 @@ class _Guy:
         self.dir = 1 if random.random() < 0.5 else -1   # walking direction
         self.grounded = False
         self.walk_timer = 0
-        self.color = random.choice(_GUY_COLORS)
+        self.color = random.choice(_GNOME_COLORS)
         self.alive = True
+        self.on_fire = False
+        self.fire_start_time = 0.0
 
     def _can_walk(self, ix, iy, direction, grid):
         """Check if we can walk one step in the given direction.
@@ -55,14 +63,12 @@ class _Guy:
         next_x = ix + direction
         if next_x < 0 or next_x >= w:
             return None  # edge of world
-        if grid[iy, next_x] == EMPTY:
-            # Space ahead is clear — walk there even if it's a cliff
-            # (guy will fall via gravity next tick)
+        if grid[iy, next_x] == EMPTY or grid[iy, next_x] == FIRE:
             return (float(next_x), float(iy))
         else:
             # Blocked — try climbing 1 cell
             climb_y = iy - 1
-            if climb_y >= 0 and grid[climb_y, next_x] == EMPTY:
+            if climb_y >= 0 and (grid[climb_y, next_x] == EMPTY or grid[climb_y, next_x] == FIRE):
                 return (float(next_x), float(climb_y))
             else:
                 return None  # can't climb
@@ -76,12 +82,26 @@ class _Guy:
             self.alive = False
             return
 
+        # Check if standing in fire
+        if 0 <= ix < w and 0 <= iy < h and grid[iy, ix] == FIRE:
+            if not self.on_fire:
+                self.on_fire = True
+                self.fire_start_time = time.time()
+
+        # Die after 7 seconds on fire
+        if self.on_fire and (time.time() - self.fire_start_time) > 7.0:
+            self.alive = False
+            return
+
+        # Walk speed: every 3 ticks normally, every 1 tick on fire
+        walk_interval = 1 if self.on_fire else 3
+
         # --- gravity ---
         below_y = iy + 1
         on_ground = False
         if below_y >= h:
             on_ground = True          # bottom of screen
-        elif grid[below_y, ix] != EMPTY:
+        elif grid[below_y, ix] != EMPTY and grid[below_y, ix] != FIRE:
             on_ground = True          # standing on wall or sand
 
         if on_ground:
@@ -91,7 +111,7 @@ class _Guy:
 
             # --- walking ---
             self.walk_timer += 1
-            if self.walk_timer >= 3:   # walk every 3 ticks
+            if self.walk_timer >= walk_interval:
                 self.walk_timer = 0
 
                 # Try current direction
@@ -230,6 +250,77 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False):
                 c[y, wx] = col
 
 
+def _step_fire(state):
+    """Physics step for fire particles: rise upward, spread, consume."""
+    g = state.grid
+    c = state.colors
+    h, w = g.shape
+
+    fire = (g == FIRE)
+    if not np.any(fire):
+        return
+
+    ys, xs = np.where(fire)
+    order = np.arange(len(ys))
+    np.random.shuffle(order)
+    ys = ys[order]
+    xs = xs[order]
+
+    for i in range(len(ys)):
+        y, x = int(ys[i]), int(xs[i])
+        if g[y, x] != FIRE:
+            continue
+        col = tuple(random.choice(_FIRE_COLORS))
+
+        # Consume neighbors — turn adjacent HEAVY or STATIC into FIRE
+        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, -1), (-1, 1), (1, 1)]:
+            nx, ny2 = x + dx, y + dy
+            if 0 <= nx < w and 0 <= ny2 < h:
+                if g[ny2, nx] == HEAVY or g[ny2, nx] == STATIC:
+                    if random.random() < 0.08:
+                        g[ny2, nx] = FIRE
+                        c[ny2, nx] = random.choice(_FIRE_COLORS)
+
+        # Fire rises upward (opposite of sand)
+        ny = y - 1
+        moved = False
+
+        if 0 <= ny < h and g[ny, x] == EMPTY:
+            g[y, x] = EMPTY
+            g[ny, x] = FIRE
+            c[ny, x] = col
+            y = ny
+            moved = True
+        else:
+            # Try diagonal up-left/up-right
+            if random.random() < 0.5:
+                tries = [(x - 1, ny), (x + 1, ny)]
+            else:
+                tries = [(x + 1, ny), (x - 1, ny)]
+            for tx, ty in tries:
+                if 0 <= tx < w and 0 <= ty < h and g[ty, tx] == EMPTY:
+                    g[y, x] = EMPTY
+                    g[ty, tx] = FIRE
+                    c[ty, tx] = col
+                    x, y = tx, ty
+                    moved = True
+                    break
+
+        # Random lateral drift
+        if not moved:
+            if random.random() < 0.4:
+                lx = x + (1 if random.random() < 0.5 else -1)
+                if 0 <= lx < w and g[y, lx] == EMPTY:
+                    g[y, x] = EMPTY
+                    g[y, lx] = FIRE
+                    c[y, lx] = col
+                    moved = True
+
+        # Fire has a chance to die out
+        if random.random() < 0.005:
+            g[y, x] = EMPTY
+
+
 def _bresenham(x0, y0, x1, y1):
     points = []
     dx = abs(x1 - x0)
@@ -285,7 +376,8 @@ class SandWindow:
     MODE_POUR = 0
     MODE_WALL = 1
     MODE_ERASE = 2
-    MODE_GUY = 3
+    MODE_GNOME = 3
+    MODE_FIRE = 4
 
     def __init__(self, window_width, window_height):
         self.visible = False
@@ -304,8 +396,8 @@ class SandWindow:
         self._last_tick = 0.0
         self._last_wall_gx = None
         self._last_wall_gy = None
-        self._guys = []
-        self._guy_spawned_this_pinch = False
+        self._gnomes = []
+        self._gnome_spawned_this_pinch = False
         self._pixel_surf = pygame.Surface((self._gw, self._gh), pygame.SRCALPHA)
         self._buttons = []
         self._build_buttons()
@@ -322,7 +414,8 @@ class SandWindow:
         self._btn_wall = _Button(x, row1_y, bw, bh, "WALL", font_size=34); x += bw + margin
         self._btn_erase = _Button(x, row1_y, bw, bh, "ERASE", font_size=34); x += bw + margin
         self._btn_color = _Button(x, row1_y, bw + 30, bh, "COLOR", font_size=34); x += bw + 30 + margin
-        self._btn_guy = _Button(x, row1_y, bw, bh, "GUY", font_size=34); x += bw + margin
+        self._btn_gnome = _Button(x, row1_y, bw, bh, "GNOME", font_size=34); x += bw + margin
+        self._btn_fire = _Button(x, row1_y, bw, bh, "FIRE", font_size=34); x += bw + margin
 
         x = margin
         self._btn_wind = _Button(x, row2_y, bw, bh, "WIND", font_size=34); x += bw + margin
@@ -336,7 +429,7 @@ class SandWindow:
 
         self._buttons = [
             self._btn_pour, self._btn_wall, self._btn_erase, self._btn_color,
-            self._btn_guy,
+            self._btn_gnome, self._btn_fire,
             self._btn_wind, self._btn_wind_dir, self._btn_gravity, self._btn_clear,
             self._btn_quit,
         ]
@@ -354,8 +447,8 @@ class SandWindow:
         self._last_tick = time.time()
         self._last_wall_gx = None
         self._last_wall_gy = None
-        self._guys = []
-        self._guy_spawned_this_pinch = False
+        self._gnomes = []
+        self._gnome_spawned_this_pinch = False
         self._update_button_states()
 
     def close(self):
@@ -369,7 +462,8 @@ class SandWindow:
         self._btn_pour.active = (self._mode == self.MODE_POUR)
         self._btn_wall.active = (self._mode == self.MODE_WALL)
         self._btn_erase.active = (self._mode == self.MODE_ERASE)
-        self._btn_guy.active = (self._mode == self.MODE_GUY)
+        self._btn_gnome.active = (self._mode == self.MODE_GNOME)
+        self._btn_fire.active = (self._mode == self.MODE_FIRE)
         self._btn_wind.active = self._wind_active
         self._btn_gravity.active = self._reverse_gravity
         self._btn_wind.label = "WIND ON" if self._wind_active else "WIND"
@@ -397,8 +491,11 @@ class SandWindow:
         if self._btn_erase.hit(px, py):
             self._mode = self.MODE_ERASE
             self._update_button_states(); return
-        if self._btn_guy.hit(px, py):
-            self._mode = self.MODE_GUY
+        if self._btn_gnome.hit(px, py):
+            self._mode = self.MODE_GNOME
+            self._update_button_states(); return
+        if self._btn_fire.hit(px, py):
+            self._mode = self.MODE_FIRE
             self._update_button_states(); return
         if self._btn_color.hit(px, py):
             self.random_color()
@@ -414,7 +511,7 @@ class SandWindow:
             self._update_button_states(); return
         if self._btn_clear.hit(px, py):
             self._state.clear_all()
-            self._guys = []
+            self._gnomes = []
             return
         if not self._in_ui_zone(px, py):
             gx, gy = int(px) // _CELL, int(py) // _CELL
@@ -427,8 +524,13 @@ class SandWindow:
                 for dx in range(-1, 2):
                     for dy in range(-1, 2):
                         self._state.add(STATIC, gx + dx, gy + dy, _WALL_COLOR)
-            elif self._mode == self.MODE_GUY:
-                self._guys.append(_Guy(gx, gy))
+            elif self._mode == self.MODE_GNOME:
+                self._gnomes.append(_Gnome(gx, gy))
+            elif self._mode == self.MODE_FIRE:
+                for _ in range(15):
+                    rx = gx + random.randint(-3, 3)
+                    ry = gy + random.randint(-2, 2)
+                    self._state.add(FIRE, rx, ry, random.choice(_FIRE_COLORS))
 
     def handle_pinch(self, px, py):
         if self._in_ui_zone(px, py):
@@ -464,16 +566,23 @@ class SandWindow:
             self._state.erase_circle(gx, gy, 6)
             self._last_wall_gx = None
             self._last_wall_gy = None
-        elif self._mode == self.MODE_GUY:
+        elif self._mode == self.MODE_GNOME:
             # Don't spawn continuously while pinching — only on first frame
-            if not getattr(self, '_guy_spawned_this_pinch', False):
-                self._guys.append(_Guy(gx, gy))
-                self._guy_spawned_this_pinch = True
+            if not getattr(self, '_gnome_spawned_this_pinch', False):
+                self._gnomes.append(_Gnome(gx, gy))
+                self._gnome_spawned_this_pinch = True
+            self._last_wall_gx = None
+            self._last_wall_gy = None
+        elif self._mode == self.MODE_FIRE:
+            for _ in range(8):
+                rx = gx + random.randint(-2, 2)
+                ry = gy + random.randint(-2, 2)
+                self._state.add(FIRE, rx, ry, random.choice(_FIRE_COLORS))
             self._last_wall_gx = None
             self._last_wall_gy = None
 
     def handle_pinch_end(self):
-        self._guy_spawned_this_pinch = False
+        self._gnome_spawned_this_pinch = False
         self._last_wall_gx = None
         self._last_wall_gy = None
 
@@ -487,10 +596,11 @@ class SandWindow:
         steps = 0
         while self._sim_accum >= step_dt and steps < 5:
             _step(self._state, self._wind_active, self._wind_dir, self._reverse_gravity)
-            # Step all guys
-            for guy in self._guys:
-                guy.step(self._state.grid)
-            self._guys = [g for g in self._guys if g.alive]
+            _step_fire(self._state)
+            # Step all gnomes
+            for gnome in self._gnomes:
+                gnome.step(self._state.grid)
+            self._gnomes = [g for g in self._gnomes if g.alive]
             self._sim_accum -= step_dt
             steps += 1
 
@@ -509,21 +619,26 @@ class SandWindow:
         scaled = pygame.transform.scale(surf_small, (self._ww, self._wh))
         surface.blit(scaled, (0, 0))
 
-        # Draw guys as stick figures (2× size)
-        for guy in self._guys:
-            sx = int(guy.gx * _CELL + _CELL // 2)
-            sy = int(guy.gy * _CELL + _CELL // 2)
-            c = guy.color
+        # Draw gnomes as stick figures (2× size)
+        for gnome in self._gnomes:
+            sx = int(gnome.gx * _CELL + _CELL // 2)
+            sy = int(gnome.gy * _CELL + _CELL // 2)
+            c = gnome.color
+            # If on fire, flicker between orange/red
+            if gnome.on_fire:
+                c = random.choice([(255, 80, 0), (255, 0, 0), (255, 180, 0)])
             # Head
             pygame.draw.circle(surface, c, (sx, sy - 16), 8)
             # Body
             pygame.draw.line(surface, c, (sx, sy - 8), (sx, sy + 12), 3)
             # Arms
-            arm_wave = 4 if guy.grounded and guy.walk_timer == 0 else 0
+            arm_wave = 4 if gnome.grounded and gnome.walk_timer == 0 else 0
+            if gnome.on_fire:
+                arm_wave = random.randint(-6, 6)  # frantic arm waving
             pygame.draw.line(surface, c, (sx - 10, sy + arm_wave), (sx + 10, sy - arm_wave), 3)
             # Legs — animate walking
-            if guy.grounded:
-                leg_off = 8 if guy.walk_timer == 0 else 4
+            if gnome.grounded:
+                leg_off = 8 if gnome.walk_timer == 0 else 4
                 pygame.draw.line(surface, c, (sx, sy + 12), (sx - leg_off, sy + 24), 3)
                 pygame.draw.line(surface, c, (sx, sy + 12), (sx + leg_off, sy + 24), 3)
             else:
@@ -531,8 +646,14 @@ class SandWindow:
                 pygame.draw.line(surface, c, (sx, sy + 12), (sx - 4, sy + 24), 3)
                 pygame.draw.line(surface, c, (sx, sy + 12), (sx + 4, sy + 24), 3)
             # Direction indicator — eye dot
-            eye_x = sx + (4 * guy.dir)
+            eye_x = sx + (4 * gnome.dir)
             pygame.draw.circle(surface, (255, 255, 255), (eye_x, sy - 18), 2)
+            # Fire particles around burning gnome
+            if gnome.on_fire:
+                for _ in range(3):
+                    fx = sx + random.randint(-8, 8)
+                    fy = sy + random.randint(-20, 10)
+                    pygame.draw.circle(surface, random.choice(_FIRE_COLORS), (fx, fy), random.randint(2, 4))
 
         # Draw buttons
         self._update_button_states()
@@ -542,10 +663,10 @@ class SandWindow:
         # Particle count
         small = pygame.font.Font(None, 24)
         count = st.count()
-        n_guys = len(self._guys)
+        n_gnomes = len(self._gnomes)
         info = f"{count} particles"
-        if n_guys:
-            info += f"  |  {n_guys} guys"
+        if n_gnomes:
+            info += f"  |  {n_gnomes} gnomes"
         ct = small.render(info, True, (70, 70, 70))
         surface.blit(ct, (self._ww - 140, 16))
 
