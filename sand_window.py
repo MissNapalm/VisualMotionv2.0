@@ -344,11 +344,11 @@ def _step_fire(state):
             if 0 <= nx < w and 0 <= ny2 < h:
                 cell = g[ny2, nx]
                 if cell == WOOD:
-                    if random.random() < 0.032:      # wood burns moderate
+                    if random.random() < 0.018:      # wood burns moderate
                         g[ny2, nx] = FIRE
                         c[ny2, nx] = random.choice(_FIRE_COLORS)
                 elif cell == HEAVY or cell == STATIC:
-                    if random.random() < 0.016:      # sand/wall burns slow
+                    if random.random() < 0.009:      # sand/wall burns slow
                         g[ny2, nx] = FIRE
                         c[ny2, nx] = random.choice(_FIRE_COLORS)
                 elif cell == GUNPOWDER:
@@ -432,11 +432,11 @@ def _step_napalm(state):
             if 0 <= nx < w and 0 <= ny2 < h:
                 cell = g[ny2, nx]
                 if cell == WOOD:
-                    if random.random() < 0.032:
+                    if random.random() < 0.018:
                         g[ny2, nx] = FIRE
                         c[ny2, nx] = random.choice(_FIRE_COLORS)
                 elif cell == HEAVY or cell == STATIC:
-                    if random.random() < 0.016:
+                    if random.random() < 0.009:
                         g[ny2, nx] = FIRE
                         c[ny2, nx] = random.choice(_FIRE_COLORS)
                 elif cell == GUNPOWDER:
