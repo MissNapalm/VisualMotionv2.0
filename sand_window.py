@@ -10,6 +10,7 @@ import numpy as np
 
 _CELL = 5
 _FPS_SIM = 55
+_PERF_CAP = 12000     # above this many active particles, process a random subset
 
 _BLACK = (0, 0, 0)
 _PALE_YELLOW = (255, 255, 153)
@@ -26,12 +27,14 @@ WOOD = 4
 CONCRETE = 5
 GUNPOWDER = 6
 NAPALM = 7
+GASOLINE = 8
 
 _WOOD_COLOR = (139, 90, 43)
 _WOOD_COLORS = [(139, 90, 43), (120, 75, 35), (160, 105, 50), (110, 70, 30)]
 _CONCRETE_COLOR = (140, 140, 145)
 _GUNPOWDER_COLORS = [(80, 80, 80), (60, 60, 60), (40, 40, 40), (100, 100, 100), (30, 30, 30)]
 _NAPALM_COLORS = [(255, 60, 0), (255, 100, 0), (255, 40, 20), (200, 50, 0), (255, 120, 30)]
+_GASOLINE_COLORS = [(180, 200, 50), (160, 180, 40), (200, 210, 60), (140, 170, 30), (190, 190, 55)]
 
 _FUN_COLORS = [
     (255, 69, 0), (255, 105, 180), (255, 255, 0),
@@ -188,18 +191,29 @@ class _SandState:
         return int(np.count_nonzero(self.grid))
 
 
+def _throttle(ys, xs, cap=_PERF_CAP):
+    """If there are more particles than cap, randomly sample a subset.
+    Returns (ys, xs) — possibly trimmed."""
+    n = len(ys)
+    if n <= cap:
+        return ys, xs
+    # Process a random fraction so the per-frame cost stays bounded
+    keep = np.random.choice(n, size=cap, replace=False)
+    return ys[keep], xs[keep]
+
+
 def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False):
     """Vectorized physics step using numpy."""
     g = state.grid
     c = state.colors
     h, w = g.shape
 
-    # Find all heavy (sand) particles
-    sand = (g == HEAVY)
-    if not np.any(sand):
+    # Find all falling particles: sand, gunpowder, gasoline
+    falling = (g == HEAVY) | (g == GUNPOWDER) | (g == GASOLINE)
+    if not np.any(falling):
         return
 
-    ys, xs = np.where(sand)
+    ys, xs = np.where(falling)
 
     # Shuffle order to avoid directional bias
     order = np.arange(len(ys))
@@ -207,13 +221,20 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False):
     ys = ys[order]
     xs = xs[order]
 
+    # Throttle: skip particles when count is very high
+    ys, xs = _throttle(ys, xs)
+
     grav = -1 if reverse_gravity else 1
 
     for i in range(len(ys)):
         y, x = int(ys[i]), int(xs[i])
-        if g[y, x] != HEAVY:
+        ptype = g[y, x]
+        if ptype not in (HEAVY, GUNPOWDER, GASOLINE):
             continue  # already moved by another particle this step
         col = c[y, x].copy()
+
+        # Gasoline is more fluid — higher lateral slide chance
+        slide_chance = 0.7 if ptype == GASOLINE else 0.3
 
         ny = y + grav
         moved = False
@@ -221,7 +242,7 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False):
         # Try straight down
         if 0 <= ny < h and g[ny, x] == EMPTY:
             g[y, x] = EMPTY
-            g[ny, x] = HEAVY
+            g[ny, x] = ptype
             c[ny, x] = col
             y = ny
             moved = True
@@ -234,7 +255,7 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False):
             for tx, ty in tries:
                 if 0 <= tx < w and 0 <= ty < h and g[ty, tx] == EMPTY:
                     g[y, x] = EMPTY
-                    g[ty, tx] = HEAVY
+                    g[ty, tx] = ptype
                     c[ty, tx] = col
                     x, y = tx, ty
                     moved = True
@@ -242,11 +263,11 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False):
 
         # If didn't fall, try lateral slide
         if not moved:
-            if random.random() < 0.3:
+            if random.random() < slide_chance:
                 lx = x + (1 if random.random() < 0.5 else -1)
                 if 0 <= lx < w and g[y, lx] == EMPTY:
                     g[y, x] = EMPTY
-                    g[y, lx] = HEAVY
+                    g[y, lx] = ptype
                     c[y, lx] = col
                     x = lx
                     moved = True
@@ -256,7 +277,7 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False):
             wx = x + wind_dir
             if 0 <= wx < w and g[y, wx] == EMPTY:
                 g[y, x] = EMPTY
-                g[y, wx] = HEAVY
+                g[y, wx] = ptype
                 c[y, wx] = col
 
 
@@ -281,6 +302,10 @@ def _ignite_gunpowder(state, start_x, start_y):
                 visited.add((nx, ny))
                 if g[ny, nx] == GUNPOWDER:
                     queue.append((nx, ny))
+                elif g[ny, nx] == GASOLINE:
+                    # Gasoline ignites instantly from explosion
+                    g[ny, nx] = FIRE
+                    c[ny, nx] = random.choice(_FIRE_COLORS)
                 elif g[ny, nx] in (HEAVY, STATIC, WOOD) and random.random() < 0.4:
                     # Explosion blasts nearby materials
                     g[ny, nx] = FIRE
@@ -302,6 +327,9 @@ def _step_fire(state):
     np.random.shuffle(order)
     ys = ys[order]
     xs = xs[order]
+
+    # Throttle fire processing when particle count is huge
+    ys, xs = _throttle(ys, xs)
 
     for i in range(len(ys)):
         y, x = int(ys[i]), int(xs[i])
@@ -326,6 +354,10 @@ def _step_fire(state):
                 elif cell == GUNPOWDER:
                     # Chain-reaction: BFS ignite ALL connected gunpowder instantly
                     _ignite_gunpowder(state, nx, ny2)
+                elif cell == GASOLINE:
+                    # Gasoline ignites instantly on contact with fire
+                    g[ny2, nx] = FIRE
+                    c[ny2, nx] = random.choice(_FIRE_COLORS)
                 # CONCRETE: never catches fire
 
         # Fire rises upward (opposite of sand)
@@ -385,6 +417,9 @@ def _step_napalm(state):
     ys = ys[order]
     xs = xs[order]
 
+    # Throttle napalm processing when particle count is huge
+    ys, xs = _throttle(ys, xs)
+
     for i in range(len(ys)):
         y, x = int(ys[i]), int(xs[i])
         if g[y, x] != NAPALM:
@@ -406,6 +441,9 @@ def _step_napalm(state):
                         c[ny2, nx] = random.choice(_FIRE_COLORS)
                 elif cell == GUNPOWDER:
                     _ignite_gunpowder(state, nx, ny2)
+                elif cell == GASOLINE:
+                    g[ny2, nx] = FIRE
+                    c[ny2, nx] = random.choice(_FIRE_COLORS)
 
         # Napalm FALLS downward (like sand, but fire)
         ny = y + 1
@@ -511,6 +549,7 @@ class SandWindow:
     MODE_FILL = 7
     MODE_GUNPOWDER = 8
     MODE_NAPALM = 9
+    MODE_GASOLINE = 10
 
     def __init__(self, window_width, window_height):
         self.visible = False
@@ -568,6 +607,8 @@ class SandWindow:
                                       color=(50, 50, 50), active_color=(120, 120, 120)); x += bw + 10 + margin
         self._btn_napalm = _Button(x, row2_y, bw, bh, "NAPALM", font_size=28,
                                    color=(120, 30, 0), active_color=(255, 60, 0)); x += bw + margin
+        self._btn_gasoline = _Button(x, row2_y, bw, bh, "GAS", font_size=32,
+                                     color=(70, 80, 20), active_color=(200, 220, 60)); x += bw + margin
 
         quit_h = bh * 2 + margin
         self._btn_quit = _Button(self._ww - bw - margin, row1_y, bw, quit_h, "QUIT",
@@ -577,6 +618,7 @@ class SandWindow:
             self._btn_pour, self._btn_wall, self._btn_wood, self._btn_concrete,
             self._btn_erase, self._btn_color,
             self._btn_gnome, self._btn_fire, self._btn_gunpowder, self._btn_napalm,
+            self._btn_gasoline,
             self._btn_wind, self._btn_wind_dir, self._btn_gravity, self._btn_clear,
             self._btn_fill,
             self._btn_quit,
@@ -618,13 +660,14 @@ class SandWindow:
         self._btn_fire.active = (self._mode == self.MODE_FIRE)
         self._btn_gunpowder.active = (self._mode == self.MODE_GUNPOWDER)
         self._btn_napalm.active = (self._mode == self.MODE_NAPALM)
+        self._btn_gasoline.active = (self._mode == self.MODE_GASOLINE)
         self._btn_fill.active = (self._mode == self.MODE_FILL)
         # Show what material fill will use
         _fill_names = {
             self.MODE_POUR: "FILL:S", self.MODE_WALL: "FILL:W",
             self.MODE_WOOD: "FILL:Wd", self.MODE_CONCRETE: "FILL:C",
             self.MODE_FIRE: "FILL:F", self.MODE_GUNPOWDER: "FILL:GP",
-            self.MODE_NAPALM: "FILL:N",
+            self.MODE_NAPALM: "FILL:N", self.MODE_GASOLINE: "FILL:G",
         }
         self._btn_fill.label = _fill_names.get(self._fill_material, "FILL")
         self._btn_wind.active = self._wind_active
@@ -667,6 +710,8 @@ class SandWindow:
             ptype, color_fn = GUNPOWDER, lambda: random.choice(_GUNPOWDER_COLORS)
         elif mat == self.MODE_NAPALM:
             ptype, color_fn = NAPALM, lambda: random.choice(_NAPALM_COLORS)
+        elif mat == self.MODE_GASOLINE:
+            ptype, color_fn = GASOLINE, lambda: random.choice(_GASOLINE_COLORS)
         else:
             ptype, color_fn = HEAVY, lambda: self._color
 
@@ -730,6 +775,10 @@ class SandWindow:
             self._mode = self.MODE_NAPALM
             self._fill_material = self.MODE_NAPALM
             self._update_button_states(); return
+        if self._btn_gasoline.hit(px, py):
+            self._mode = self.MODE_GASOLINE
+            self._fill_material = self.MODE_GASOLINE
+            self._update_button_states(); return
         if self._btn_fill.hit(px, py):
             self._mode = self.MODE_FILL
             self._update_button_states(); return
@@ -776,14 +825,20 @@ class SandWindow:
                     ry = gy + random.randint(-2, 2)
                     self._state.add(FIRE, rx, ry, random.choice(_FIRE_COLORS))
             elif self._mode == self.MODE_GUNPOWDER:
-                for dx in range(-2, 3):
-                    for dy in range(-2, 3):
-                        self._state.add(GUNPOWDER, gx + dx, gy + dy, random.choice(_GUNPOWDER_COLORS))
+                for _ in range(25):
+                    rx = gx + random.randint(-5, 5)
+                    ry = gy + random.randint(-5, 2)
+                    self._state.add(GUNPOWDER, rx, ry, random.choice(_GUNPOWDER_COLORS))
             elif self._mode == self.MODE_NAPALM:
                 for _ in range(15):
                     rx = gx + random.randint(-3, 3)
                     ry = gy + random.randint(-2, 2)
                     self._state.add(NAPALM, rx, ry, random.choice(_NAPALM_COLORS))
+            elif self._mode == self.MODE_GASOLINE:
+                for _ in range(25):
+                    rx = gx + random.randint(-5, 5)
+                    ry = gy + random.randint(-5, 2)
+                    self._state.add(GASOLINE, rx, ry, random.choice(_GASOLINE_COLORS))
             elif self._mode == self.MODE_FILL:
                 self._flood_fill(gx, gy)
 
@@ -866,25 +921,24 @@ class SandWindow:
             self._last_wall_gx = None
             self._last_wall_gy = None
         elif self._mode == self.MODE_GUNPOWDER:
-            if (self._last_wall_gx is not None and self._last_wall_gy is not None
-                    and abs(gx - self._last_wall_gx) <= 8
-                    and abs(gy - self._last_wall_gy) <= 8):
-                line_pts = _bresenham(self._last_wall_gx, self._last_wall_gy, gx, gy)
-                for lx, ly in line_pts:
-                    for dx in range(-1, 2):
-                        for dy in range(-1, 2):
-                            self._state.add(GUNPOWDER, lx + dx, ly + dy, random.choice(_GUNPOWDER_COLORS))
-            else:
-                for dx in range(-1, 2):
-                    for dy in range(-1, 2):
-                        self._state.add(GUNPOWDER, gx + dx, gy + dy, random.choice(_GUNPOWDER_COLORS))
-            self._last_wall_gx = gx
-            self._last_wall_gy = gy
+            for _ in range(10):
+                rx = gx + random.randint(-3, 3)
+                ry = gy + random.randint(-2, 1)
+                self._state.add(GUNPOWDER, rx, ry, random.choice(_GUNPOWDER_COLORS))
+            self._last_wall_gx = None
+            self._last_wall_gy = None
         elif self._mode == self.MODE_NAPALM:
             for _ in range(8):
                 rx = gx + random.randint(-2, 2)
                 ry = gy + random.randint(-2, 2)
                 self._state.add(NAPALM, rx, ry, random.choice(_NAPALM_COLORS))
+            self._last_wall_gx = None
+            self._last_wall_gy = None
+        elif self._mode == self.MODE_GASOLINE:
+            for _ in range(10):
+                rx = gx + random.randint(-3, 3)
+                ry = gy + random.randint(-2, 1)
+                self._state.add(GASOLINE, rx, ry, random.choice(_GASOLINE_COLORS))
             self._last_wall_gx = None
             self._last_wall_gy = None
         elif self._mode == self.MODE_FILL:
