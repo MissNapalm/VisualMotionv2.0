@@ -53,7 +53,8 @@ class HandTracker:
         self._landmarks = None
         self._frame = None
         self._history = []            # last N landmark sets for averaging
-        self._avg_window = 3          # frames to average
+        self._avg_window = 2          # frames to average (lower = less lag)
+        self._raw_landmarks = None    # unaveraged for instant pinch detection
         self._running = False
         self._thread = None
         self._cap = None
@@ -77,6 +78,11 @@ class HandTracker:
         with self._lock:
             return self._landmarks
 
+    def latest_raw(self):
+        """Unaveraged landmarks — zero lag for pinch detection."""
+        with self._lock:
+            return self._raw_landmarks
+
     def latest_frame(self):
         with self._lock:
             return self._frame
@@ -92,6 +98,7 @@ class HandTracker:
             mp_img = mp_image.Image(image_format=mp_image.ImageFormat.SRGB, data=rgb)
             result = self._detector.detect(mp_img)
             landmarks = None
+            raw_lm = None
             if result.hand_landmarks:
                 raw = result.hand_landmarks[0]
                 raw_lm = [_Landmark(l.x, l.y, l.z) for l in raw]
@@ -111,5 +118,6 @@ class HandTracker:
                 self._history.clear()
             with self._lock:
                 self._landmarks = landmarks
+                self._raw_landmarks = raw_lm
                 self._frame = rgb
             time.sleep(0.001)

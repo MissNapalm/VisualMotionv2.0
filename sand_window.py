@@ -22,6 +22,12 @@ EMPTY = 0
 STATIC = 1
 HEAVY = 2
 FIRE = 3
+WOOD = 4
+CONCRETE = 5
+
+_WOOD_COLOR = (139, 90, 43)
+_WOOD_COLORS = [(139, 90, 43), (120, 75, 35), (160, 105, 50), (110, 70, 30)]
+_CONCRETE_COLOR = (140, 140, 145)
 
 _FUN_COLORS = [
     (255, 69, 0), (255, 105, 180), (255, 255, 0),
@@ -152,7 +158,7 @@ class _SandState:
     def __init__(self, w, h):
         self.width = w
         self.height = h
-        # 0 = empty, 1 = static wall, 2 = heavy/sand
+        # 0=empty, 1=static wall, 2=heavy/sand, 3=fire, 4=wood, 5=concrete
         self.grid = np.zeros((h, w), dtype=np.uint8)
         # RGB color per cell
         self.colors = np.zeros((h, w, 3), dtype=np.uint8)
@@ -272,14 +278,21 @@ def _step_fire(state):
             continue
         col = tuple(random.choice(_FIRE_COLORS))
 
-        # Consume neighbors — turn adjacent HEAVY or STATIC into FIRE
+        # Consume neighbors — spread to adjacent flammable cells
+        # CONCRETE is fireproof.  WOOD burns slowly.  HEAVY/STATIC burn faster.
         for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, -1), (-1, 1), (1, 1)]:
             nx, ny2 = x + dx, y + dy
             if 0 <= nx < w and 0 <= ny2 < h:
-                if g[ny2, nx] == HEAVY or g[ny2, nx] == STATIC:
-                    if random.random() < 0.08:
+                cell = g[ny2, nx]
+                if cell == WOOD:
+                    if random.random() < 0.003:      # wood burns very slowly
                         g[ny2, nx] = FIRE
                         c[ny2, nx] = random.choice(_FIRE_COLORS)
+                elif cell == HEAVY or cell == STATIC:
+                    if random.random() < 0.025:      # sand/wall burns moderate
+                        g[ny2, nx] = FIRE
+                        c[ny2, nx] = random.choice(_FIRE_COLORS)
+                # CONCRETE: never catches fire
 
         # Fire rises upward (opposite of sand)
         ny = y - 1
@@ -380,6 +393,9 @@ class SandWindow:
     MODE_ERASE = 2
     MODE_GNOME = 3
     MODE_FIRE = 4
+    MODE_WOOD = 5
+    MODE_CONCRETE = 6
+    MODE_FILL = 7
 
     def __init__(self, window_width, window_height):
         self.visible = False
@@ -389,6 +405,7 @@ class SandWindow:
         self._gh = window_height // _CELL
         self._state = _SandState(self._gw, self._gh)
         self._mode = self.MODE_POUR
+        self._fill_material = self.MODE_POUR
         self._color = _PALE_YELLOW
         self._color_idx = 7
         self._wind_active = False
@@ -400,39 +417,49 @@ class SandWindow:
         self._last_wall_gy = None
         self._gnomes = []
         self._gnome_spawned_this_pinch = False
+        self._fill_done_this_pinch = False
         self._pixel_surf = pygame.Surface((self._gw, self._gh), pygame.SRCALPHA)
         self._buttons = []
         self._build_buttons()
 
     def _build_buttons(self):
-        bw = 160
+        bw = 130
         bh = 70
-        margin = 10
+        margin = 8
         row2_y = self._wh - bh - margin
         row1_y = row2_y - bh - margin
 
         x = margin
-        self._btn_pour = _Button(x, row1_y, bw, bh, "SAND", font_size=34); x += bw + margin
-        self._btn_wall = _Button(x, row1_y, bw, bh, "WALL", font_size=34); x += bw + margin
-        self._btn_erase = _Button(x, row1_y, bw, bh, "ERASE", font_size=34); x += bw + margin
-        self._btn_color = _Button(x, row1_y, bw + 30, bh, "COLOR", font_size=34); x += bw + 30 + margin
-        self._btn_gnome = _Button(x, row1_y, bw, bh, "GNOME", font_size=34); x += bw + margin
-        self._btn_fire = _Button(x, row1_y, bw, bh, "FIRE", font_size=34); x += bw + margin
+        self._btn_pour = _Button(x, row1_y, bw, bh, "SAND", font_size=32); x += bw + margin
+        self._btn_wall = _Button(x, row1_y, bw, bh, "WALL", font_size=32); x += bw + margin
+        self._btn_wood = _Button(x, row1_y, bw, bh, "WOOD", font_size=32,
+                                 color=(70, 45, 20), active_color=(180, 120, 60)); x += bw + margin
+        self._btn_concrete = _Button(x, row1_y, bw + 20, bh, "CONCRETE", font_size=28,
+                                     color=(60, 60, 65), active_color=(160, 160, 170)); x += bw + 20 + margin
+        self._btn_erase = _Button(x, row1_y, bw, bh, "ERASE", font_size=32); x += bw + margin
+        self._btn_color = _Button(x, row1_y, bw + 20, bh, "COLOR", font_size=32); x += bw + 20 + margin
+        self._btn_gnome = _Button(x, row1_y, bw, bh, "GNOME", font_size=32); x += bw + margin
+        self._btn_fire = _Button(x, row1_y, bw, bh, "FIRE", font_size=32,
+                                 color=(80, 30, 0), active_color=(255, 120, 0)); x += bw + margin
 
         x = margin
-        self._btn_wind = _Button(x, row2_y, bw, bh, "WIND", font_size=34); x += bw + margin
-        self._btn_wind_dir = _Button(x, row2_y, bw, bh, "WIND >", font_size=34); x += bw + margin
-        self._btn_gravity = _Button(x, row2_y, bw, bh, "GRAVITY", font_size=34); x += bw + margin
-        self._btn_clear = _Button(x, row2_y, bw, bh, "CLEAR", font_size=34); x += bw + margin
+        self._btn_wind = _Button(x, row2_y, bw, bh, "WIND", font_size=32); x += bw + margin
+        self._btn_wind_dir = _Button(x, row2_y, bw, bh, "WIND >", font_size=32); x += bw + margin
+        self._btn_gravity = _Button(x, row2_y, bw + 10, bh, "GRAVITY", font_size=32); x += bw + 10 + margin
+        self._btn_clear = _Button(x, row2_y, bw, bh, "CLEAR", font_size=32); x += bw + margin
+        self._btn_fill = _Button(x, row2_y, bw, bh, "FILL", font_size=32,
+                                 color=(50, 50, 80), active_color=(120, 180, 255)); x += bw + margin
 
         quit_h = bh * 2 + margin
         self._btn_quit = _Button(self._ww - bw - margin, row1_y, bw, quit_h, "QUIT",
                                  color=(120, 30, 30), active_color=(255, 60, 60), font_size=38)
 
         self._buttons = [
-            self._btn_pour, self._btn_wall, self._btn_erase, self._btn_color,
+            self._btn_pour, self._btn_wall, self._btn_wood, self._btn_concrete,
+            self._btn_erase, self._btn_color,
             self._btn_gnome, self._btn_fire,
             self._btn_wind, self._btn_wind_dir, self._btn_gravity, self._btn_clear,
+            self._btn_fill,
             self._btn_quit,
         ]
 
@@ -440,6 +467,7 @@ class SandWindow:
         self.visible = True
         self._state = _SandState(self._gw, self._gh)
         self._mode = self.MODE_POUR
+        self._fill_material = self.MODE_POUR
         self._color = _PALE_YELLOW
         self._color_idx = 7
         self._wind_active = False
@@ -451,6 +479,7 @@ class SandWindow:
         self._last_wall_gy = None
         self._gnomes = []
         self._gnome_spawned_this_pinch = False
+        self._fill_done_this_pinch = False
         self._update_button_states()
 
     def close(self):
@@ -463,9 +492,19 @@ class SandWindow:
     def _update_button_states(self):
         self._btn_pour.active = (self._mode == self.MODE_POUR)
         self._btn_wall.active = (self._mode == self.MODE_WALL)
+        self._btn_wood.active = (self._mode == self.MODE_WOOD)
+        self._btn_concrete.active = (self._mode == self.MODE_CONCRETE)
         self._btn_erase.active = (self._mode == self.MODE_ERASE)
         self._btn_gnome.active = (self._mode == self.MODE_GNOME)
         self._btn_fire.active = (self._mode == self.MODE_FIRE)
+        self._btn_fill.active = (self._mode == self.MODE_FILL)
+        # Show what material fill will use
+        _fill_names = {
+            self.MODE_POUR: "FILL:S", self.MODE_WALL: "FILL:W",
+            self.MODE_WOOD: "FILL:Wd", self.MODE_CONCRETE: "FILL:C",
+            self.MODE_FIRE: "FILL:F",
+        }
+        self._btn_fill.label = _fill_names.get(self._fill_material, "FILL")
         self._btn_wind.active = self._wind_active
         self._btn_gravity.active = self._reverse_gravity
         self._btn_wind.label = "WIND ON" if self._wind_active else "WIND"
@@ -479,6 +518,53 @@ class SandWindow:
                 return True
         return False
 
+    def _flood_fill(self, gx, gy):
+        """Paint-bucket flood fill: fills contiguous EMPTY cells with the
+        current fill material, bounded by any non-empty cell.
+        Capped at 50 000 cells to avoid freezing on huge open areas."""
+        g = self._state.grid
+        h, w = g.shape
+        if gx < 0 or gx >= w or gy < 0 or gy >= h:
+            return
+        if g[gy, gx] != EMPTY:
+            return   # must click on an empty cell
+
+        # Determine fill type and color from _fill_material
+        mat = self._fill_material
+        if mat == self.MODE_POUR:
+            ptype, color_fn = HEAVY, lambda: self._color
+        elif mat == self.MODE_WALL:
+            ptype, color_fn = STATIC, lambda: _WALL_COLOR
+        elif mat == self.MODE_WOOD:
+            ptype, color_fn = WOOD, lambda: random.choice(_WOOD_COLORS)
+        elif mat == self.MODE_CONCRETE:
+            ptype, color_fn = CONCRETE, lambda: _CONCRETE_COLOR
+        elif mat == self.MODE_FIRE:
+            ptype, color_fn = FIRE, lambda: random.choice(_FIRE_COLORS)
+        else:
+            ptype, color_fn = HEAVY, lambda: self._color
+
+        # BFS flood fill
+        from collections import deque
+        queue = deque()
+        queue.append((gx, gy))
+        visited = set()
+        visited.add((gx, gy))
+        cap = 50000
+        filled = 0
+        while queue and filled < cap:
+            cx, cy = queue.popleft()
+            self._state.add(ptype, cx, cy, color_fn())
+            filled += 1
+            for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nx, ny = cx + dx, cy + dy
+                if 0 <= nx < w and 0 <= ny < h and (nx, ny) not in visited:
+                    if g[ny, nx] == EMPTY:
+                        visited.add((nx, ny))
+                        queue.append((nx, ny))
+        if filled > 0:
+            print(f"Flood fill: {filled} cells")
+
     def handle_tap(self, px, py):
         if self._btn_quit.hit(px, py):
             self.close()
@@ -486,9 +572,19 @@ class SandWindow:
             return
         if self._btn_pour.hit(px, py):
             self._mode = self.MODE_POUR
+            self._fill_material = self.MODE_POUR
             self._update_button_states(); return
         if self._btn_wall.hit(px, py):
             self._mode = self.MODE_WALL
+            self._fill_material = self.MODE_WALL
+            self._update_button_states(); return
+        if self._btn_wood.hit(px, py):
+            self._mode = self.MODE_WOOD
+            self._fill_material = self.MODE_WOOD
+            self._update_button_states(); return
+        if self._btn_concrete.hit(px, py):
+            self._mode = self.MODE_CONCRETE
+            self._fill_material = self.MODE_CONCRETE
             self._update_button_states(); return
         if self._btn_erase.hit(px, py):
             self._mode = self.MODE_ERASE
@@ -498,6 +594,10 @@ class SandWindow:
             self._update_button_states(); return
         if self._btn_fire.hit(px, py):
             self._mode = self.MODE_FIRE
+            self._fill_material = self.MODE_FIRE
+            self._update_button_states(); return
+        if self._btn_fill.hit(px, py):
+            self._mode = self.MODE_FILL
             self._update_button_states(); return
         if self._btn_color.hit(px, py):
             self.random_color()
@@ -526,6 +626,14 @@ class SandWindow:
                 for dx in range(-1, 2):
                     for dy in range(-1, 2):
                         self._state.add(STATIC, gx + dx, gy + dy, _WALL_COLOR)
+            elif self._mode == self.MODE_WOOD:
+                for dx in range(-1, 2):
+                    for dy in range(-1, 2):
+                        self._state.add(WOOD, gx + dx, gy + dy, random.choice(_WOOD_COLORS))
+            elif self._mode == self.MODE_CONCRETE:
+                for dx in range(-1, 2):
+                    for dy in range(-1, 2):
+                        self._state.add(CONCRETE, gx + dx, gy + dy, _CONCRETE_COLOR)
             elif self._mode == self.MODE_GNOME:
                 self._gnomes.append(_Gnome(gx, gy))
             elif self._mode == self.MODE_FIRE:
@@ -533,6 +641,8 @@ class SandWindow:
                     rx = gx + random.randint(-3, 3)
                     ry = gy + random.randint(-2, 2)
                     self._state.add(FIRE, rx, ry, random.choice(_FIRE_COLORS))
+            elif self._mode == self.MODE_FILL:
+                self._flood_fill(gx, gy)
 
     def handle_pinch(self, px, py):
         if self._in_ui_zone(px, py):
@@ -564,6 +674,36 @@ class SandWindow:
                         self._state.add(STATIC, gx + dx, gy + dy, _WALL_COLOR)
             self._last_wall_gx = gx
             self._last_wall_gy = gy
+        elif self._mode == self.MODE_WOOD:
+            if (self._last_wall_gx is not None and self._last_wall_gy is not None
+                    and abs(gx - self._last_wall_gx) <= 8
+                    and abs(gy - self._last_wall_gy) <= 8):
+                line_pts = _bresenham(self._last_wall_gx, self._last_wall_gy, gx, gy)
+                for lx, ly in line_pts:
+                    for dx in range(-1, 2):
+                        for dy in range(-1, 2):
+                            self._state.add(WOOD, lx + dx, ly + dy, random.choice(_WOOD_COLORS))
+            else:
+                for dx in range(-1, 2):
+                    for dy in range(-1, 2):
+                        self._state.add(WOOD, gx + dx, gy + dy, random.choice(_WOOD_COLORS))
+            self._last_wall_gx = gx
+            self._last_wall_gy = gy
+        elif self._mode == self.MODE_CONCRETE:
+            if (self._last_wall_gx is not None and self._last_wall_gy is not None
+                    and abs(gx - self._last_wall_gx) <= 8
+                    and abs(gy - self._last_wall_gy) <= 8):
+                line_pts = _bresenham(self._last_wall_gx, self._last_wall_gy, gx, gy)
+                for lx, ly in line_pts:
+                    for dx in range(-1, 2):
+                        for dy in range(-1, 2):
+                            self._state.add(CONCRETE, lx + dx, ly + dy, _CONCRETE_COLOR)
+            else:
+                for dx in range(-1, 2):
+                    for dy in range(-1, 2):
+                        self._state.add(CONCRETE, gx + dx, gy + dy, _CONCRETE_COLOR)
+            self._last_wall_gx = gx
+            self._last_wall_gy = gy
         elif self._mode == self.MODE_ERASE:
             self._state.erase_circle(gx, gy, 6)
             self._last_wall_gx = None
@@ -582,9 +722,17 @@ class SandWindow:
                 self._state.add(FIRE, rx, ry, random.choice(_FIRE_COLORS))
             self._last_wall_gx = None
             self._last_wall_gy = None
+        elif self._mode == self.MODE_FILL:
+            # One-shot fill per pinch, same as gnome
+            if not getattr(self, '_fill_done_this_pinch', False):
+                self._flood_fill(gx, gy)
+                self._fill_done_this_pinch = True
+            self._last_wall_gx = None
+            self._last_wall_gy = None
 
     def handle_pinch_end(self):
         self._gnome_spawned_this_pinch = False
+        self._fill_done_this_pinch = False
         self._last_wall_gx = None
         self._last_wall_gy = None
 

@@ -40,8 +40,8 @@ WINDOW_HEIGHT = 800
 # ==============================
 class FingerSmoother:
     """One-pole exponential smoothing — simple, no jitter."""
-    def __init__(self, alpha=0.15):
-        self._a = alpha  # lower = heavier smoothing
+    def __init__(self, alpha=0.45):
+        self._a = alpha  # lower = heavier smoothing (0.45 = snappy but still smooth)
         self._tx = None
         self._ty = None
         self._ix = None
@@ -68,7 +68,7 @@ class FingerSmoother:
 
 class PinchSmoother:
     """Smooths pinch coordinates for scroll/interaction."""
-    def __init__(self, alpha=0.20):
+    def __init__(self, alpha=0.35):
         self._a = alpha
         self._x = None
         self._y = None
@@ -104,14 +104,15 @@ class HandState:
         self.last_pinch_x = None
         self.last_pinch_y = None
         self.pinch_start_pos = None
-        self.movement_threshold = 55        # dead zone before scroll starts
-        self.pinch_threshold = 0.06
+        self.movement_threshold = 45        # dead zone before scroll starts
+        self.pinch_threshold = 0.045          # distance to START a pinch (fingers actually touching)
+        self.pinch_release = 0.07             # distance to END a pinch (hysteresis)
         self.pinch_prev = False
         self.last_pinch_time = 0
         self.double_pinch_window = 0.4
         self.pinch_hold_start = 0
         self.scroll_unlocked = False
-        self.pinch_hold_delay = 0.18
+        self.pinch_hold_delay = 0.18          # longer delay so quick taps don't unlock scroll
 
         # selection
         self.selected_card = None

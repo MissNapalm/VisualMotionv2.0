@@ -54,6 +54,8 @@ class App:
         self._weather = WeatherWindow(WINDOW_WIDTH, WINDOW_HEIGHT)
         self._todo = TodoWindow(WINDOW_WIDTH, WINDOW_HEIGHT)
         self._sand = SandWindow(WINDOW_WIDTH, WINDOW_HEIGHT)
+        self._cur_thumb = (0, 0)
+        self._cur_index = (0, 0)
 
     @property
     def _any_app_visible(self):
@@ -146,7 +148,7 @@ class App:
                 # Feed pinch to Sand app (pour/draw/erase)
                 if self._sand.visible and st.pinch_start_pos:
                     total = math.hypot(px - st.pinch_start_pos[0], py - st.pinch_start_pos[1])
-                    if total > 15:  # small dead zone
+                    if total > 8:  # small dead zone
                         self._sand.handle_pinch(px, py)
 
                 # Only scroll when no app window is open
@@ -277,10 +279,8 @@ class App:
         draw_camera_thumbnail(screen, frame, WINDOW_WIDTH, hand)
 
         if hand:
-            (tx, ty), (ix, iy) = st.finger_smoother.update(
-                lm_to_screen(hand[4], WINDOW_WIDTH, WINDOW_HEIGHT),
-                lm_to_screen(hand[8], WINDOW_WIDTH, WINDOW_HEIGHT),
-            )
+            tx, ty = self._cur_thumb
+            ix, iy = self._cur_index
             if not st.wheel_active and pinch_now:
                 pygame.draw.line(screen, (255, 255, 255), (int(tx), int(ty)), (int(ix), int(iy)), 2)
             pygame.draw.circle(screen, (255, 255, 255), (int(tx), int(ty)), 10)
@@ -308,7 +308,22 @@ class App:
             if hand is not None:
                 self._last_hand = hand
                 self._hand_lost_time = 0
-                pinch_now = is_pinching(hand, st.pinch_threshold)
+                # Compute smoothed finger positions for visual rendering (dots)
+                (tx, ty), (ix, iy) = st.finger_smoother.update(
+                    lm_to_screen(hand[4], WINDOW_WIDTH, WINDOW_HEIGHT),
+                    lm_to_screen(hand[8], WINDOW_WIDTH, WINDOW_HEIGHT),
+                )
+                self._cur_thumb = (tx, ty)
+                self._cur_index = (ix, iy)
+                # Pinch detection uses RAW (unaveraged) landmarks — zero lag
+                # Hysteresis: easy to start (0.08), sticky to hold (release at 0.12)
+                raw = self.tracker.latest_raw() or hand
+                from gestures import pinch_distance
+                pdist = pinch_distance(raw)
+                if st.pinch_prev:
+                    pinch_now = pdist < st.pinch_release   # stay pinched until far apart
+                else:
+                    pinch_now = pdist < st.pinch_threshold  # start pinch when close
                 self._process_wheel(hand)
                 # Three-finger gesture in Sand = change color
                 if self._sand.visible and is_three_finger(hand):
