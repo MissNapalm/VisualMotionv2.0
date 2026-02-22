@@ -30,6 +30,13 @@ class App:
         self.screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
         pygame.display.set_caption("Gesture Carousel")
         self.clock = pygame.time.Clock()
+        pygame.mixer.init()
+        try:
+            self._snd_select = pygame.mixer.Sound("select.mp3")
+            self._snd_select.set_volume(0.5)
+        except Exception:
+            self._snd_select = None
+            print("Warning: select.mp3 not found")
         self.state = HandState()
         self.tracker = HandTracker()
         self._font_status = pygame.font.Font(None, 48)
@@ -171,6 +178,8 @@ class App:
                         name = CATEGORIES[ca][ci]
                         st.selected_card, st.selected_category = ci, ca
                         st.zoom_target = 1.0
+                        if self._snd_select:
+                            self._snd_select.play()
                         print(f"Selected: {name} (card {ci}, category {ca})")
                         break
             self._tap = None
