@@ -24,10 +24,14 @@ HEAVY = 2
 FIRE = 3
 WOOD = 4
 CONCRETE = 5
+GUNPOWDER = 6
+NAPALM = 7
 
 _WOOD_COLOR = (139, 90, 43)
 _WOOD_COLORS = [(139, 90, 43), (120, 75, 35), (160, 105, 50), (110, 70, 30)]
 _CONCRETE_COLOR = (140, 140, 145)
+_GUNPOWDER_COLORS = [(80, 80, 80), (60, 60, 60), (40, 40, 40), (100, 100, 100), (30, 30, 30)]
+_NAPALM_COLORS = [(255, 60, 0), (255, 100, 0), (255, 40, 20), (200, 50, 0), (255, 120, 30)]
 
 _FUN_COLORS = [
     (255, 69, 0), (255, 105, 180), (255, 255, 0),
@@ -69,12 +73,12 @@ class _Gnome:
         next_x = ix + direction
         if next_x < 0 or next_x >= w:
             return None  # edge of world
-        if grid[iy, next_x] == EMPTY or grid[iy, next_x] == FIRE:
+        if grid[iy, next_x] == EMPTY or grid[iy, next_x] in (FIRE, NAPALM):
             return (float(next_x), float(iy))
         else:
             # Blocked — try climbing 1 cell
             climb_y = iy - 1
-            if climb_y >= 0 and (grid[climb_y, next_x] == EMPTY or grid[climb_y, next_x] == FIRE):
+            if climb_y >= 0 and (grid[climb_y, next_x] == EMPTY or grid[climb_y, next_x] in (FIRE, NAPALM)):
                 return (float(next_x), float(climb_y))
             else:
                 return None  # can't climb
@@ -89,7 +93,7 @@ class _Gnome:
             return
 
         # Check if standing in fire
-        if 0 <= ix < w and 0 <= iy < h and grid[iy, ix] == FIRE:
+        if 0 <= ix < w and 0 <= iy < h and grid[iy, ix] in (FIRE, NAPALM):
             if not self.on_fire:
                 self.on_fire = True
                 self.fire_start_time = time.time()
@@ -107,7 +111,7 @@ class _Gnome:
         on_ground = False
         if below_y >= h:
             on_ground = True          # bottom of screen
-        elif grid[below_y, ix] != EMPTY and grid[below_y, ix] != FIRE:
+        elif grid[below_y, ix] != EMPTY and grid[below_y, ix] not in (FIRE, NAPALM):
             on_ground = True          # standing on wall or sand
 
         if on_ground:
@@ -140,7 +144,7 @@ class _Gnome:
             # Check each cell we'd pass through
             target_y = int(new_y)
             for check_y in range(iy + 1, min(target_y + 1, h)):
-                if grid[check_y, ix] != EMPTY:
+                if grid[check_y, ix] != EMPTY and grid[check_y, ix] not in (FIRE, NAPALM):
                     # Land on top of this cell
                     self.gy = float(check_y - 1)
                     self.vy = 0.0
@@ -256,6 +260,33 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False):
                 c[y, wx] = col
 
 
+def _ignite_gunpowder(state, start_x, start_y):
+    """BFS chain-reaction: instantly convert ALL connected gunpowder to FIRE."""
+    from collections import deque
+    g = state.grid
+    c = state.colors
+    h, w = g.shape
+    queue = deque()
+    queue.append((start_x, start_y))
+    visited = set()
+    visited.add((start_x, start_y))
+    while queue:
+        cx, cy = queue.popleft()
+        g[cy, cx] = FIRE
+        c[cy, cx] = random.choice(_FIRE_COLORS)
+        # Also blast neighbors: small chance to destroy adjacent non-gunpowder cells
+        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, -1), (-1, 1), (1, 1)]:
+            nx, ny = cx + dx, cy + dy
+            if 0 <= nx < w and 0 <= ny < h and (nx, ny) not in visited:
+                visited.add((nx, ny))
+                if g[ny, nx] == GUNPOWDER:
+                    queue.append((nx, ny))
+                elif g[ny, nx] in (HEAVY, STATIC, WOOD) and random.random() < 0.4:
+                    # Explosion blasts nearby materials
+                    g[ny, nx] = FIRE
+                    c[ny, nx] = random.choice(_FIRE_COLORS)
+
+
 def _step_fire(state):
     """Physics step for fire particles: rise upward, spread, consume."""
     g = state.grid
@@ -285,13 +316,16 @@ def _step_fire(state):
             if 0 <= nx < w and 0 <= ny2 < h:
                 cell = g[ny2, nx]
                 if cell == WOOD:
-                    if random.random() < 0.003:      # wood burns very slowly
+                    if random.random() < 0.075:      # wood burns fast
                         g[ny2, nx] = FIRE
                         c[ny2, nx] = random.choice(_FIRE_COLORS)
                 elif cell == HEAVY or cell == STATIC:
                     if random.random() < 0.025:      # sand/wall burns moderate
                         g[ny2, nx] = FIRE
                         c[ny2, nx] = random.choice(_FIRE_COLORS)
+                elif cell == GUNPOWDER:
+                    # Chain-reaction: BFS ignite ALL connected gunpowder instantly
+                    _ignite_gunpowder(state, nx, ny2)
                 # CONCRETE: never catches fire
 
         # Fire rises upward (opposite of sand)
@@ -331,6 +365,85 @@ def _step_fire(state):
 
         # Fire has a chance to die out
         if random.random() < 0.005:
+            g[y, x] = EMPTY
+
+
+def _step_napalm(state):
+    """Physics step for napalm: like fire but FALLS downward (gravity-affected fire).
+    Also spreads to flammable neighbors."""
+    g = state.grid
+    c = state.colors
+    h, w = g.shape
+
+    nap = (g == NAPALM)
+    if not np.any(nap):
+        return
+
+    ys, xs = np.where(nap)
+    order = np.arange(len(ys))
+    np.random.shuffle(order)
+    ys = ys[order]
+    xs = xs[order]
+
+    for i in range(len(ys)):
+        y, x = int(ys[i]), int(xs[i])
+        if g[y, x] != NAPALM:
+            continue
+        col = tuple(random.choice(_NAPALM_COLORS))
+
+        # Spread fire to neighbors just like regular fire
+        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, -1), (-1, 1), (1, 1)]:
+            nx, ny2 = x + dx, y + dy
+            if 0 <= nx < w and 0 <= ny2 < h:
+                cell = g[ny2, nx]
+                if cell == WOOD:
+                    if random.random() < 0.075:
+                        g[ny2, nx] = FIRE
+                        c[ny2, nx] = random.choice(_FIRE_COLORS)
+                elif cell == HEAVY or cell == STATIC:
+                    if random.random() < 0.025:
+                        g[ny2, nx] = FIRE
+                        c[ny2, nx] = random.choice(_FIRE_COLORS)
+                elif cell == GUNPOWDER:
+                    _ignite_gunpowder(state, nx, ny2)
+
+        # Napalm FALLS downward (like sand, but fire)
+        ny = y + 1
+        moved = False
+
+        if 0 <= ny < h and g[ny, x] == EMPTY:
+            g[y, x] = EMPTY
+            g[ny, x] = NAPALM
+            c[ny, x] = col
+            y = ny
+            moved = True
+        else:
+            # Try diagonal down-left/down-right
+            if random.random() < 0.5:
+                tries = [(x - 1, ny), (x + 1, ny)]
+            else:
+                tries = [(x + 1, ny), (x - 1, ny)]
+            for tx, ty in tries:
+                if 0 <= tx < w and 0 <= ty < h and g[ty, tx] == EMPTY:
+                    g[y, x] = EMPTY
+                    g[ty, tx] = NAPALM
+                    c[ty, tx] = col
+                    x, y = tx, ty
+                    moved = True
+                    break
+
+        # Random lateral drift
+        if not moved:
+            if random.random() < 0.3:
+                lx = x + (1 if random.random() < 0.5 else -1)
+                if 0 <= lx < w and g[y, lx] == EMPTY:
+                    g[y, x] = EMPTY
+                    g[y, lx] = NAPALM
+                    c[y, lx] = col
+                    moved = True
+
+        # Napalm lasts longer than fire (lower die-out chance)
+        if random.random() < 0.003:
             g[y, x] = EMPTY
 
 
@@ -396,6 +509,8 @@ class SandWindow:
     MODE_WOOD = 5
     MODE_CONCRETE = 6
     MODE_FILL = 7
+    MODE_GUNPOWDER = 8
+    MODE_NAPALM = 9
 
     def __init__(self, window_width, window_height):
         self.visible = False
@@ -449,6 +564,10 @@ class SandWindow:
         self._btn_clear = _Button(x, row2_y, bw, bh, "CLEAR", font_size=32); x += bw + margin
         self._btn_fill = _Button(x, row2_y, bw, bh, "FILL", font_size=32,
                                  color=(50, 50, 80), active_color=(120, 180, 255)); x += bw + margin
+        self._btn_gunpowder = _Button(x, row2_y, bw + 10, bh, "GUNPOW", font_size=28,
+                                      color=(50, 50, 50), active_color=(120, 120, 120)); x += bw + 10 + margin
+        self._btn_napalm = _Button(x, row2_y, bw, bh, "NAPALM", font_size=28,
+                                   color=(120, 30, 0), active_color=(255, 60, 0)); x += bw + margin
 
         quit_h = bh * 2 + margin
         self._btn_quit = _Button(self._ww - bw - margin, row1_y, bw, quit_h, "QUIT",
@@ -457,7 +576,7 @@ class SandWindow:
         self._buttons = [
             self._btn_pour, self._btn_wall, self._btn_wood, self._btn_concrete,
             self._btn_erase, self._btn_color,
-            self._btn_gnome, self._btn_fire,
+            self._btn_gnome, self._btn_fire, self._btn_gunpowder, self._btn_napalm,
             self._btn_wind, self._btn_wind_dir, self._btn_gravity, self._btn_clear,
             self._btn_fill,
             self._btn_quit,
@@ -497,12 +616,15 @@ class SandWindow:
         self._btn_erase.active = (self._mode == self.MODE_ERASE)
         self._btn_gnome.active = (self._mode == self.MODE_GNOME)
         self._btn_fire.active = (self._mode == self.MODE_FIRE)
+        self._btn_gunpowder.active = (self._mode == self.MODE_GUNPOWDER)
+        self._btn_napalm.active = (self._mode == self.MODE_NAPALM)
         self._btn_fill.active = (self._mode == self.MODE_FILL)
         # Show what material fill will use
         _fill_names = {
             self.MODE_POUR: "FILL:S", self.MODE_WALL: "FILL:W",
             self.MODE_WOOD: "FILL:Wd", self.MODE_CONCRETE: "FILL:C",
-            self.MODE_FIRE: "FILL:F",
+            self.MODE_FIRE: "FILL:F", self.MODE_GUNPOWDER: "FILL:GP",
+            self.MODE_NAPALM: "FILL:N",
         }
         self._btn_fill.label = _fill_names.get(self._fill_material, "FILL")
         self._btn_wind.active = self._wind_active
@@ -541,6 +663,10 @@ class SandWindow:
             ptype, color_fn = CONCRETE, lambda: _CONCRETE_COLOR
         elif mat == self.MODE_FIRE:
             ptype, color_fn = FIRE, lambda: random.choice(_FIRE_COLORS)
+        elif mat == self.MODE_GUNPOWDER:
+            ptype, color_fn = GUNPOWDER, lambda: random.choice(_GUNPOWDER_COLORS)
+        elif mat == self.MODE_NAPALM:
+            ptype, color_fn = NAPALM, lambda: random.choice(_NAPALM_COLORS)
         else:
             ptype, color_fn = HEAVY, lambda: self._color
 
@@ -596,6 +722,14 @@ class SandWindow:
             self._mode = self.MODE_FIRE
             self._fill_material = self.MODE_FIRE
             self._update_button_states(); return
+        if self._btn_gunpowder.hit(px, py):
+            self._mode = self.MODE_GUNPOWDER
+            self._fill_material = self.MODE_GUNPOWDER
+            self._update_button_states(); return
+        if self._btn_napalm.hit(px, py):
+            self._mode = self.MODE_NAPALM
+            self._fill_material = self.MODE_NAPALM
+            self._update_button_states(); return
         if self._btn_fill.hit(px, py):
             self._mode = self.MODE_FILL
             self._update_button_states(); return
@@ -641,6 +775,15 @@ class SandWindow:
                     rx = gx + random.randint(-3, 3)
                     ry = gy + random.randint(-2, 2)
                     self._state.add(FIRE, rx, ry, random.choice(_FIRE_COLORS))
+            elif self._mode == self.MODE_GUNPOWDER:
+                for dx in range(-2, 3):
+                    for dy in range(-2, 3):
+                        self._state.add(GUNPOWDER, gx + dx, gy + dy, random.choice(_GUNPOWDER_COLORS))
+            elif self._mode == self.MODE_NAPALM:
+                for _ in range(15):
+                    rx = gx + random.randint(-3, 3)
+                    ry = gy + random.randint(-2, 2)
+                    self._state.add(NAPALM, rx, ry, random.choice(_NAPALM_COLORS))
             elif self._mode == self.MODE_FILL:
                 self._flood_fill(gx, gy)
 
@@ -722,6 +865,28 @@ class SandWindow:
                 self._state.add(FIRE, rx, ry, random.choice(_FIRE_COLORS))
             self._last_wall_gx = None
             self._last_wall_gy = None
+        elif self._mode == self.MODE_GUNPOWDER:
+            if (self._last_wall_gx is not None and self._last_wall_gy is not None
+                    and abs(gx - self._last_wall_gx) <= 8
+                    and abs(gy - self._last_wall_gy) <= 8):
+                line_pts = _bresenham(self._last_wall_gx, self._last_wall_gy, gx, gy)
+                for lx, ly in line_pts:
+                    for dx in range(-1, 2):
+                        for dy in range(-1, 2):
+                            self._state.add(GUNPOWDER, lx + dx, ly + dy, random.choice(_GUNPOWDER_COLORS))
+            else:
+                for dx in range(-1, 2):
+                    for dy in range(-1, 2):
+                        self._state.add(GUNPOWDER, gx + dx, gy + dy, random.choice(_GUNPOWDER_COLORS))
+            self._last_wall_gx = gx
+            self._last_wall_gy = gy
+        elif self._mode == self.MODE_NAPALM:
+            for _ in range(8):
+                rx = gx + random.randint(-2, 2)
+                ry = gy + random.randint(-2, 2)
+                self._state.add(NAPALM, rx, ry, random.choice(_NAPALM_COLORS))
+            self._last_wall_gx = None
+            self._last_wall_gy = None
         elif self._mode == self.MODE_FILL:
             # One-shot fill per pinch, same as gnome
             if not getattr(self, '_fill_done_this_pinch', False):
@@ -747,6 +912,7 @@ class SandWindow:
         while self._sim_accum >= step_dt and steps < 5:
             _step(self._state, self._wind_active, self._wind_dir, self._reverse_gravity)
             _step_fire(self._state)
+            _step_napalm(self._state)
             # Step all gnomes
             for gnome in self._gnomes:
                 gnome.step(self._state.grid)
