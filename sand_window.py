@@ -107,7 +107,7 @@ class _Gnome:
             return
 
         # Walk speed: every 3 ticks normally, every 1 tick on fire
-        walk_interval = 1 if self.on_fire else 3
+        walk_interval = 2 if self.on_fire else 3
 
         # --- gravity ---
         below_y = iy + 1
@@ -344,11 +344,11 @@ def _step_fire(state):
             if 0 <= nx < w and 0 <= ny2 < h:
                 cell = g[ny2, nx]
                 if cell == WOOD:
-                    if random.random() < 0.075:      # wood burns fast
+                    if random.random() < 0.032:      # wood burns moderate
                         g[ny2, nx] = FIRE
                         c[ny2, nx] = random.choice(_FIRE_COLORS)
                 elif cell == HEAVY or cell == STATIC:
-                    if random.random() < 0.025:      # sand/wall burns moderate
+                    if random.random() < 0.016:      # sand/wall burns slow
                         g[ny2, nx] = FIRE
                         c[ny2, nx] = random.choice(_FIRE_COLORS)
                 elif cell == GUNPOWDER:
@@ -396,7 +396,7 @@ def _step_fire(state):
                     moved = True
 
         # Fire has a chance to die out
-        if random.random() < 0.005:
+        if random.random() < 0.012:
             g[y, x] = EMPTY
 
 
@@ -432,11 +432,11 @@ def _step_napalm(state):
             if 0 <= nx < w and 0 <= ny2 < h:
                 cell = g[ny2, nx]
                 if cell == WOOD:
-                    if random.random() < 0.075:
+                    if random.random() < 0.032:
                         g[ny2, nx] = FIRE
                         c[ny2, nx] = random.choice(_FIRE_COLORS)
                 elif cell == HEAVY or cell == STATIC:
-                    if random.random() < 0.025:
+                    if random.random() < 0.016:
                         g[ny2, nx] = FIRE
                         c[ny2, nx] = random.choice(_FIRE_COLORS)
                 elif cell == GUNPOWDER:
@@ -481,7 +481,7 @@ def _step_napalm(state):
                     moved = True
 
         # Napalm lasts longer than fire (lower die-out chance)
-        if random.random() < 0.003:
+        if random.random() < 0.007:
             g[y, x] = EMPTY
 
 
