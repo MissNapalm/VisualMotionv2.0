@@ -34,6 +34,7 @@ POISON = 11
 HOLYWATER = 12
 ICE = 13
 MONEY = 14
+DIRT = 15
 
 _WOOD_COLOR = (139, 90, 43)
 _WOOD_COLORS = [(139, 90, 43), (120, 75, 35), (160, 105, 50), (110, 70, 30)]
@@ -46,6 +47,7 @@ _POISON_COLORS = [(50, 180, 20), (30, 160, 10), (70, 200, 30), (40, 140, 15), (6
 _HOLYWATER_COLORS = [(200, 200, 255), (180, 180, 255), (220, 220, 255), (160, 180, 255), (210, 210, 240)]
 _ICE_COLORS = [(180, 220, 255), (160, 210, 250), (200, 230, 255), (140, 200, 245), (190, 225, 255)]
 _MONEY_COLORS = [(40, 180, 40), (30, 160, 30), (60, 200, 50), (20, 140, 20), (50, 190, 45)]
+_DIRT_COLORS = [(101, 67, 33), (85, 55, 25), (120, 80, 40), (90, 60, 30), (110, 72, 36)]
 
 _FUN_COLORS = [
     (255, 69, 0), (255, 105, 180), (255, 255, 0),
@@ -872,8 +874,8 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False):
     c = state.colors
     h, w = g.shape
 
-    # Find all falling particles: sand, gunpowder, gasoline, water, confetti, poison, holy water, money
-    falling = (g == HEAVY) | (g == GUNPOWDER) | (g == GASOLINE) | (g == WATER) | (g == CONFETTI) | (g == POISON) | (g == HOLYWATER) | (g == MONEY)
+    # Find all falling particles: sand, gunpowder, gasoline, water, confetti, poison, holy water, money, dirt
+    falling = (g == HEAVY) | (g == GUNPOWDER) | (g == GASOLINE) | (g == WATER) | (g == CONFETTI) | (g == POISON) | (g == HOLYWATER) | (g == MONEY) | (g == DIRT)
     if not np.any(falling):
         return
 
@@ -893,7 +895,7 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False):
     for i in range(len(ys)):
         y, x = int(ys[i]), int(xs[i])
         ptype = g[y, x]
-        if ptype not in (HEAVY, GUNPOWDER, GASOLINE, WATER, CONFETTI, POISON, HOLYWATER, MONEY):
+        if ptype not in (HEAVY, GUNPOWDER, GASOLINE, WATER, CONFETTI, POISON, HOLYWATER, MONEY, DIRT):
             continue  # already moved by another particle this step
         col = c[y, x].copy()
 
@@ -990,7 +992,7 @@ def _ignite_gunpowder(state, start_x, start_y):
                     # Gasoline ignites instantly from explosion
                     g[ny, nx] = FIRE
                     c[ny, nx] = random.choice(_FIRE_COLORS)
-                elif g[ny, nx] in (HEAVY, STATIC, WOOD) and random.random() < 0.4:
+                elif g[ny, nx] in (HEAVY, STATIC, WOOD, DIRT) and random.random() < 0.4:
                     # Explosion blasts nearby materials
                     g[ny, nx] = FIRE
                     c[ny, nx] = random.choice(_FIRE_COLORS)
@@ -1043,6 +1045,10 @@ def _step_fire(state):
                     break
                 elif cell == WOOD:
                     if random.random() < 0.018:      # wood burns moderate
+                        g[ny2, nx] = FIRE
+                        c[ny2, nx] = random.choice(_FIRE_COLORS)
+                elif cell == DIRT:
+                    if random.random() < 0.025:      # dirt burns faster than wood
                         g[ny2, nx] = FIRE
                         c[ny2, nx] = random.choice(_FIRE_COLORS)
                 elif cell == HEAVY or cell == STATIC:
@@ -1146,6 +1152,10 @@ def _step_napalm(state):
                     break
                 elif cell == WOOD:
                     if random.random() < 0.018:
+                        g[ny2, nx] = FIRE
+                        c[ny2, nx] = random.choice(_FIRE_COLORS)
+                elif cell == DIRT:
+                    if random.random() < 0.025:
                         g[ny2, nx] = FIRE
                         c[ny2, nx] = random.choice(_FIRE_COLORS)
                 elif cell == HEAVY or cell == STATIC:
@@ -1275,6 +1285,7 @@ class SandWindow:
     MODE_BOMB = 17
     MODE_MONEY = 18
     MODE_FIREBOMB = 19
+    MODE_DIRT = 20
 
     def __init__(self, window_width, window_height):
         self.visible = False
@@ -1342,6 +1353,8 @@ class SandWindow:
                                   color=(20, 80, 20), active_color=(60, 200, 60)); x += bw + margin
         self._btn_firebomb = _Button(x, row1_y, bw, bh, "FBOMB", font_size=22,
                                      color=(120, 30, 0), active_color=(255, 80, 0)); x += bw + margin
+        self._btn_dirt = _Button(x, row1_y, bw, bh, "DIRT", font_size=24,
+                                 color=(60, 40, 20), active_color=(140, 90, 45)); x += bw + margin
 
         x = margin
         self._btn_wind = _Button(x, row2_y, bw, bh, "WIND", font_size=24); x += bw + margin
@@ -1378,7 +1391,7 @@ class SandWindow:
             self._btn_erase, self._btn_color,
             self._btn_gnome, self._btn_fire, self._btn_gunpowder, self._btn_napalm,
             self._btn_gasoline, self._btn_water, self._btn_confetti, self._btn_bomb,
-            self._btn_money, self._btn_firebomb,
+            self._btn_money, self._btn_firebomb, self._btn_dirt,
             self._btn_poison, self._btn_holywater, self._btn_ice,
             self._btn_wind, self._btn_wind_dir, self._btn_gravity,
             self._btn_slow, self._btn_fast, self._btn_clear,
@@ -1441,6 +1454,7 @@ class SandWindow:
         self._btn_bomb.active = (self._mode == self.MODE_BOMB)
         self._btn_money.active = (self._mode == self.MODE_MONEY)
         self._btn_firebomb.active = (self._mode == self.MODE_FIREBOMB)
+        self._btn_dirt.active = (self._mode == self.MODE_DIRT)
         self._btn_fill.active = (self._mode == self.MODE_FILL)
         # Show what material fill will use
         _fill_names = {
@@ -1448,7 +1462,7 @@ class SandWindow:
             self.MODE_WOOD: "FILL:Wd", self.MODE_CONCRETE: "FILL:C",
             self.MODE_FIRE: "FILL:F", self.MODE_GUNPOWDER: "FILL:GP",
             self.MODE_NAPALM: "FILL:N", self.MODE_GASOLINE: "FILL:G",
-            self.MODE_WATER: "FILL:Wt",
+            self.MODE_WATER: "FILL:Wt", self.MODE_DIRT: "FILL:D",
         }
         self._btn_fill.label = _fill_names.get(self._fill_material, "FILL")
         self._btn_wind.active = self._wind_active
@@ -1502,6 +1516,8 @@ class SandWindow:
             ptype, color_fn = GASOLINE, lambda: random.choice(_GASOLINE_COLORS)
         elif mat == self.MODE_WATER:
             ptype, color_fn = WATER, lambda: random.choice(_WATER_COLORS)
+        elif mat == self.MODE_DIRT:
+            ptype, color_fn = DIRT, lambda: random.choice(_DIRT_COLORS)
         else:
             ptype, color_fn = HEAVY, lambda: self._color
 
@@ -1608,6 +1624,10 @@ class SandWindow:
             self._update_button_states(); return
         if self._btn_firebomb.hit(px, py):
             self._mode = self.MODE_FIREBOMB
+            self._update_button_states(); return
+        if self._btn_dirt.hit(px, py):
+            self._mode = self.MODE_DIRT
+            self._fill_material = self.MODE_DIRT
             self._update_button_states(); return
         if self._btn_fill.hit(px, py):
             self._mode = self.MODE_FILL
@@ -1722,6 +1742,11 @@ class SandWindow:
                     rx = gx + random.randint(-4, 4)
                     ry = gy + random.randint(-4, 1)
                     self._state.add(MONEY, rx, ry, random.choice(_MONEY_COLORS))
+            elif self._mode == self.MODE_DIRT:
+                for _ in range(25):
+                    rx = gx + random.randint(-5, 5)
+                    ry = gy + random.randint(-5, 2)
+                    self._state.add(DIRT, rx, ry, random.choice(_DIRT_COLORS))
             elif self._mode == self.MODE_FILL:
                 self._flood_fill(gx, gy)
 
@@ -1893,6 +1918,13 @@ class SandWindow:
                 self._state.add(MONEY, rx, ry, random.choice(_MONEY_COLORS))
             self._last_wall_gx = None
             self._last_wall_gy = None
+        elif self._mode == self.MODE_DIRT:
+            for _ in range(10):
+                rx = gx + random.randint(-3, 3)
+                ry = gy + random.randint(-2, 1)
+                self._state.add(DIRT, rx, ry, random.choice(_DIRT_COLORS))
+            self._last_wall_gx = None
+            self._last_wall_gy = None
         elif self._mode == self.MODE_FILL:
             # One-shot fill per pinch, same as gnome
             if not getattr(self, '_fill_done_this_pinch', False):
@@ -1951,7 +1983,7 @@ class SandWindow:
     _SCROLL_MODES = [
         MODE_POUR, MODE_HAND, MODE_WOOD, MODE_CONCRETE, MODE_ERASE,
         MODE_GNOME, MODE_FIRE, MODE_GUNPOWDER, MODE_NAPALM, MODE_GASOLINE,
-        MODE_WATER, MODE_CONFETTI, MODE_POISON, MODE_HOLYWATER, MODE_ICE, MODE_BOMB, MODE_FIREBOMB, MODE_MONEY, MODE_FILL,
+        MODE_WATER, MODE_CONFETTI, MODE_POISON, MODE_HOLYWATER, MODE_ICE, MODE_BOMB, MODE_FIREBOMB, MODE_MONEY, MODE_DIRT, MODE_FILL,
     ]
 
     def handle_scroll(self, direction):

@@ -326,6 +326,9 @@ class App:
                     self._mouse_down_pos = (mx, my)
                     self._mouse_down_time = now
                     self._mouse_btn_consumed = False
+                    # Instant response: select buttons or paint on click-down
+                    if self._sand.visible:
+                        self._sand.handle_tap(mx, my)
                 elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
                     if self._mouse_down:
                         mx, my = event.pos
@@ -339,9 +342,6 @@ class App:
                                     # Double-click = line tool
                                     if now - self._mouse_last_click_time < 0.4:
                                         self._sand.handle_double_click(mx, my)
-                                    else:
-                                        # Single click = select button or paint
-                                        self._sand.handle_tap(mx, my)
                                 self._mouse_last_click_time = now
                         if self._sand.visible:
                             self._sand.handle_pinch_end()
