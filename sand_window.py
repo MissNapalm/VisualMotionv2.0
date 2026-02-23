@@ -30,6 +30,8 @@ NAPALM = 7
 GASOLINE = 8
 WATER = 9
 CONFETTI = 10
+POISON = 11
+HOLYWATER = 12
 
 _WOOD_COLOR = (139, 90, 43)
 _WOOD_COLORS = [(139, 90, 43), (120, 75, 35), (160, 105, 50), (110, 70, 30)]
@@ -38,6 +40,8 @@ _GUNPOWDER_COLORS = [(80, 80, 80), (60, 60, 60), (40, 40, 40), (100, 100, 100), 
 _NAPALM_COLORS = [(255, 60, 0), (255, 100, 0), (255, 40, 20), (200, 50, 0), (255, 120, 30)]
 _GASOLINE_COLORS = [(180, 200, 50), (160, 180, 40), (200, 210, 60), (140, 170, 30), (190, 190, 55)]
 _WATER_COLORS = [(30, 100, 220), (40, 120, 240), (20, 80, 200), (50, 130, 255), (35, 110, 230)]
+_POISON_COLORS = [(50, 180, 20), (30, 160, 10), (70, 200, 30), (40, 140, 15), (60, 190, 25)]
+_HOLYWATER_COLORS = [(200, 200, 255), (180, 180, 255), (220, 220, 255), (160, 180, 255), (210, 210, 240)]
 
 _FUN_COLORS = [
     (255, 69, 0), (255, 105, 180), (255, 255, 0),
@@ -85,11 +89,16 @@ class _Gnome:
         # Celebration state
         self.celebrating = False
         self.celebrate_start = 0.0      # time.time() when celebration began
+        # Zombie state
+        self.is_zombie = False
+        self.zombie_target = None       # gnome we're chasing
+        self.frozen = False             # freeze on contact
+        self.freeze_start = 0.0         # time.time() when freeze began
 
     def _can_walk(self, ix, iy, direction, grid):
         """Check if we can walk one step in the given direction.
         Returns (new_gx, new_gy) or None."""
-        _passable = (EMPTY, FIRE, NAPALM, WATER)
+        _passable = (EMPTY, FIRE, NAPALM, WATER, POISON, HOLYWATER)
         h, w = grid.shape
         next_x = ix + direction
         if next_x < 0 or next_x >= w:
@@ -115,6 +124,13 @@ class _Gnome:
             self.alive = False
             return
 
+        # --- Frozen (zombie bite freeze) ---
+        if self.frozen:
+            if time.time() - self.freeze_start >= 1.0:
+                self.frozen = False
+            else:
+                return  # can't move while frozen
+
         # Check if standing in or near fire (2-cell radius)
         if not self.on_fire:
             for dx in range(-2, 3):
@@ -127,8 +143,38 @@ class _Gnome:
                 if self.on_fire:
                     break
 
+        # Check if touching poison — turns into zombie
+        if not self.is_zombie and not self.on_fire:
+            for dx in range(-2, 3):
+                for dy in range(-2, 3):
+                    cx, cy = ix + dx, iy + dy
+                    if 0 <= cx < w and 0 <= cy < h and grid[cy, cx] == POISON:
+                        self.is_zombie = True
+                        self.color = (30, 160, 30)
+                        self.hat_color = (20, 100, 20)
+                        self.has_parachute = False
+                        self.parachute_open = False
+                        self.celebrating = False
+                        break
+                if self.is_zombie:
+                    break
+
+        # Check if zombie touching holy water — cured!
+        if self.is_zombie:
+            for dx in range(-2, 3):
+                for dy in range(-2, 3):
+                    cx, cy = ix + dx, iy + dy
+                    if 0 <= cx < w and 0 <= cy < h and grid[cy, cx] == HOLYWATER:
+                        self.is_zombie = False
+                        self.color = random.choice(_GNOME_COLORS)
+                        self.hat_color = random.choice(_HAT_COLORS)
+                        self.has_parachute = True
+                        break
+                if not self.is_zombie:
+                    break
+
         # Check if touching confetti — triggers celebration hop
-        if not self.celebrating and not self.on_fire:
+        if not self.celebrating and not self.on_fire and not self.is_zombie:
             for dx in range(-2, 3):
                 for dy in range(-2, 3):
                     cx, cy = ix + dx, iy + dy
@@ -148,10 +194,13 @@ class _Gnome:
             self.alive = False
             return
 
-        # Walk speed: every 5 ticks normally, every 3 on fire, every 10 in water (50% speed)
+        # Walk speed: every 5 ticks normally, every 3 on fire, every 10 in water
+        # Zombies walk slightly slower (7)
         in_water = (0 <= ix < w and 0 <= iy < h and grid[iy, ix] == WATER)
         if self.on_fire:
             walk_interval = 3
+        elif self.is_zombie:
+            walk_interval = 7
         elif in_water:
             walk_interval = 10
         else:
@@ -162,7 +211,7 @@ class _Gnome:
         on_ground = False
         if below_y >= h:
             on_ground = True          # bottom of screen
-        elif grid[below_y, ix] != EMPTY and grid[below_y, ix] not in (FIRE, NAPALM, WATER):
+        elif grid[below_y, ix] != EMPTY and grid[below_y, ix] not in (FIRE, NAPALM, WATER, POISON, HOLYWATER):
             on_ground = True          # standing on wall or sand (water is passable)
 
         if on_ground:
@@ -183,6 +232,14 @@ class _Gnome:
                     return  # skip walking
 
             # --- walking ---
+            # Zombies chase nearest living gnome
+            if self.is_zombie and self.zombie_target is not None:
+                tgt = self.zombie_target
+                if tgt.alive and not tgt.is_zombie:
+                    self.dir = 1 if tgt.gx > self.gx else -1
+                else:
+                    self.zombie_target = None
+
             self.walk_timer += 1
             if self.walk_timer >= walk_interval:
                 self.walk_timer = 0
@@ -208,7 +265,7 @@ class _Gnome:
             # Deploy parachute after 0.2s of falling (if still available)
             # Don't deploy while doing a confetti celebration hop
             fall_dur = time.time() - self.fall_start
-            if fall_dur >= 0.2 and self.has_parachute and not self.parachute_open and not self.celebrating:
+            if fall_dur >= 0.2 and self.has_parachute and not self.parachute_open and not self.celebrating and not self.is_zombie:
                 self.parachute_open = True
 
             # Burn parachute if gnome is on fire
@@ -242,7 +299,7 @@ class _Gnome:
             target_y = int(new_y)
             for check_y in range(iy + 1, min(target_y + 1, h)):
                 cell = grid[check_y, ix]
-                if cell != EMPTY and cell not in (FIRE, NAPALM, WATER):
+                if cell != EMPTY and cell not in (FIRE, NAPALM, WATER, POISON, HOLYWATER):
                     # Land on top of this cell
                     self.gy = float(check_y - 1)
                     self.vy = 0.0
@@ -252,6 +309,80 @@ class _Gnome:
                 self.alive = False
                 return
             self.gy = new_y
+
+
+# ────────────────────────────────────────────
+# Gibs — bouncing body pieces from explosions
+# ────────────────────────────────────────────
+
+_GIB_COLORS = [
+    (200, 60, 60), (180, 50, 50), (160, 40, 40),
+    (220, 80, 80), (140, 30, 30), (190, 70, 50),
+]
+
+
+class _Gib:
+    """A small bouncing chunk that sprays out when a gnome dies."""
+
+    def __init__(self, x, y, color=None):
+        self.x = float(x)
+        self.y = float(y)
+        self.vx = random.uniform(-3.0, 3.0)
+        self.vy = random.uniform(-5.0, -1.0)
+        self.color = color or random.choice(_GIB_COLORS)
+        self.alive = True
+        self.rest_timer = 0  # frames at rest
+
+    def step(self, grid):
+        h, w = grid.shape
+        # Gravity
+        self.vy += 0.35
+        # Move X
+        new_x = self.x + self.vx
+        ix, iy = int(new_x), int(self.y)
+        if ix < 0 or ix >= w:
+            self.vx = -self.vx * 0.6  # bounce off side walls
+            new_x = self.x + self.vx
+        elif 0 <= iy < h and grid[iy, ix] not in (EMPTY, FIRE, NAPALM, WATER):
+            self.vx = -self.vx * 0.6  # bounce off solid
+            new_x = self.x
+        self.x = new_x
+
+        # Move Y
+        new_y = self.y + self.vy
+        ix2 = int(self.x)
+        iy2 = int(new_y)
+        if iy2 >= h:
+            # Hit bottom — rest on floor
+            self.y = float(h - 1)
+            self.vy = 0.0
+            self.vx *= 0.5
+            self.rest_timer += 1
+        elif 0 <= iy2 < h and 0 <= ix2 < w and grid[iy2, ix2] not in (EMPTY, FIRE, NAPALM, WATER):
+            # Hit something solid — bounce
+            if self.vy > 0:
+                self.vy = -self.vy * 0.4
+                self.vx *= 0.8
+                self.rest_timer += 1
+            else:
+                self.vy = 0.0
+                self.rest_timer += 1
+            new_y = self.y
+        else:
+            self.rest_timer = 0
+        self.y = new_y
+
+        # Clamp
+        if self.x < 0:
+            self.x = 0.0
+        if self.x >= w:
+            self.x = float(w - 1)
+
+        # Die after resting long enough (30 frames ≈ 1s)
+        if self.rest_timer > 30:
+            # Check if effectively stopped
+            if abs(self.vx) < 0.1 and abs(self.vy) < 0.5:
+                self.alive = False
 
 
 # ────────────────────────────────────────────
@@ -314,8 +445,8 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False):
     c = state.colors
     h, w = g.shape
 
-    # Find all falling particles: sand, gunpowder, gasoline, water, confetti
-    falling = (g == HEAVY) | (g == GUNPOWDER) | (g == GASOLINE) | (g == WATER) | (g == CONFETTI)
+    # Find all falling particles: sand, gunpowder, gasoline, water, confetti, poison, holy water
+    falling = (g == HEAVY) | (g == GUNPOWDER) | (g == GASOLINE) | (g == WATER) | (g == CONFETTI) | (g == POISON) | (g == HOLYWATER)
     if not np.any(falling):
         return
 
@@ -335,7 +466,7 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False):
     for i in range(len(ys)):
         y, x = int(ys[i]), int(xs[i])
         ptype = g[y, x]
-        if ptype not in (HEAVY, GUNPOWDER, GASOLINE, WATER, CONFETTI):
+        if ptype not in (HEAVY, GUNPOWDER, GASOLINE, WATER, CONFETTI, POISON, HOLYWATER):
             continue  # already moved by another particle this step
         col = c[y, x].copy()
 
@@ -343,7 +474,7 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False):
         # Confetti flutters — very high lateral drift
         if ptype == CONFETTI:
             slide_chance = 0.85
-        elif ptype in (GASOLINE, WATER):
+        elif ptype in (GASOLINE, WATER, POISON, HOLYWATER):
             slide_chance = 0.7
         else:
             slide_chance = 0.3
@@ -697,6 +828,8 @@ class SandWindow:
     MODE_WATER = 11
     MODE_HAND = 12
     MODE_CONFETTI = 13
+    MODE_POISON = 14
+    MODE_HOLYWATER = 15
 
     def __init__(self, window_width, window_height):
         self.visible = False
@@ -717,6 +850,7 @@ class SandWindow:
         self._last_wall_gx = None
         self._last_wall_gy = None
         self._gnomes = []
+        self._gibs = []
         self._gnome_spawned_this_pinch = False
         self._fill_done_this_pinch = False
         self._held_gnome = None
@@ -730,53 +864,58 @@ class SandWindow:
         self._build_buttons()
 
     def _build_buttons(self):
-        bw = 95
+        bw = 88
         bh = 50
-        margin = 6
+        margin = 5
         row2_y = self._wh - bh - margin
         row1_y = row2_y - bh - margin
 
         x = margin
-        self._btn_pour = _Button(x, row1_y, bw, bh, "SAND", font_size=26); x += bw + margin
-        self._btn_hand = _Button(x, row1_y, bw, bh, "HAND", font_size=26,
+        self._btn_pour = _Button(x, row1_y, bw, bh, "SAND", font_size=24); x += bw + margin
+        self._btn_hand = _Button(x, row1_y, bw, bh, "HAND", font_size=24,
                                  color=(80, 60, 40), active_color=(220, 180, 120)); x += bw + margin
-        self._btn_wood = _Button(x, row1_y, bw, bh, "WOOD", font_size=26,
+        self._btn_wood = _Button(x, row1_y, bw, bh, "WOOD", font_size=24,
                                  color=(70, 45, 20), active_color=(180, 120, 60)); x += bw + margin
-        self._btn_concrete = _Button(x, row1_y, bw + 10, bh, "CONCRT", font_size=24,
-                                     color=(60, 60, 65), active_color=(160, 160, 170)); x += bw + 10 + margin
-        self._btn_erase = _Button(x, row1_y, bw, bh, "ERASE", font_size=26); x += bw + margin
-        self._btn_color = _Button(x, row1_y, bw + 10, bh, "COLOR", font_size=26); x += bw + 10 + margin
-        self._btn_gnome = _Button(x, row1_y, bw, bh, "GNOME", font_size=26); x += bw + margin
-        self._btn_fire = _Button(x, row1_y, bw, bh, "FIRE", font_size=26,
+        self._btn_concrete = _Button(x, row1_y, bw, bh, "CONCRT", font_size=22,
+                                     color=(60, 60, 65), active_color=(160, 160, 170)); x += bw + margin
+        self._btn_erase = _Button(x, row1_y, bw, bh, "ERASE", font_size=24); x += bw + margin
+        self._btn_color = _Button(x, row1_y, bw, bh, "COLOR", font_size=24); x += bw + margin
+        self._btn_gnome = _Button(x, row1_y, bw, bh, "GNOME", font_size=24); x += bw + margin
+        self._btn_fire = _Button(x, row1_y, bw, bh, "FIRE", font_size=24,
                                  color=(80, 30, 0), active_color=(255, 120, 0)); x += bw + margin
-        self._btn_confetti = _Button(x, row1_y, bw + 10, bh, "CONFTI", font_size=24,
-                                     color=(100, 40, 100), active_color=(255, 100, 255)); x += bw + 10 + margin
+        self._btn_confetti = _Button(x, row1_y, bw, bh, "CONFTI", font_size=22,
+                                     color=(100, 40, 100), active_color=(255, 100, 255)); x += bw + margin
 
         x = margin
-        self._btn_wind = _Button(x, row2_y, bw, bh, "WIND", font_size=26); x += bw + margin
-        self._btn_wind_dir = _Button(x, row2_y, bw, bh, "WIND >", font_size=24); x += bw + margin
-        self._btn_gravity = _Button(x, row2_y, bw + 5, bh, "GRAV", font_size=26); x += bw + 5 + margin
-        self._btn_clear = _Button(x, row2_y, bw, bh, "CLEAR", font_size=26); x += bw + margin
-        self._btn_fill = _Button(x, row2_y, bw, bh, "FILL", font_size=26,
+        self._btn_wind = _Button(x, row2_y, bw, bh, "WIND", font_size=24); x += bw + margin
+        self._btn_wind_dir = _Button(x, row2_y, bw, bh, "WIND>", font_size=22); x += bw + margin
+        self._btn_gravity = _Button(x, row2_y, bw, bh, "GRAV", font_size=24); x += bw + margin
+        self._btn_clear = _Button(x, row2_y, bw, bh, "CLEAR", font_size=24); x += bw + margin
+        self._btn_fill = _Button(x, row2_y, bw, bh, "FILL", font_size=24,
                                  color=(50, 50, 80), active_color=(120, 180, 255)); x += bw + margin
-        self._btn_gunpowder = _Button(x, row2_y, bw + 5, bh, "GUNPW", font_size=24,
-                                      color=(50, 50, 50), active_color=(120, 120, 120)); x += bw + 5 + margin
-        self._btn_napalm = _Button(x, row2_y, bw, bh, "NAPLM", font_size=24,
+        self._btn_gunpowder = _Button(x, row2_y, bw, bh, "GUNPW", font_size=22,
+                                      color=(50, 50, 50), active_color=(120, 120, 120)); x += bw + margin
+        self._btn_napalm = _Button(x, row2_y, bw, bh, "NAPLM", font_size=22,
                                    color=(120, 30, 0), active_color=(255, 60, 0)); x += bw + margin
-        self._btn_gasoline = _Button(x, row2_y, bw, bh, "GAS", font_size=26,
+        self._btn_gasoline = _Button(x, row2_y, bw, bh, "GAS", font_size=24,
                                      color=(70, 80, 20), active_color=(200, 220, 60)); x += bw + margin
-        self._btn_water = _Button(x, row2_y, bw, bh, "WATER", font_size=26,
+        self._btn_water = _Button(x, row2_y, bw, bh, "WATER", font_size=24,
                                   color=(15, 50, 120), active_color=(40, 130, 255)); x += bw + margin
+        self._btn_poison = _Button(x, row2_y, bw, bh, "ZOMBI", font_size=22,
+                                   color=(20, 80, 10), active_color=(50, 200, 30)); x += bw + margin
+        self._btn_holywater = _Button(x, row2_y, bw, bh, "HOLY", font_size=24,
+                                      color=(80, 80, 130), active_color=(200, 200, 255)); x += bw + margin
 
         quit_h = bh * 2 + margin
         self._btn_quit = _Button(self._ww - bw - margin, row1_y, bw, quit_h, "QUIT",
-                                 color=(120, 30, 30), active_color=(255, 60, 60), font_size=30)
+                                 color=(120, 30, 30), active_color=(255, 60, 60), font_size=28)
 
         self._buttons = [
             self._btn_pour, self._btn_hand, self._btn_wood, self._btn_concrete,
             self._btn_erase, self._btn_color,
             self._btn_gnome, self._btn_fire, self._btn_gunpowder, self._btn_napalm,
             self._btn_gasoline, self._btn_water, self._btn_confetti,
+            self._btn_poison, self._btn_holywater,
             self._btn_wind, self._btn_wind_dir, self._btn_gravity, self._btn_clear,
             self._btn_fill,
             self._btn_quit,
@@ -797,6 +936,7 @@ class SandWindow:
         self._last_wall_gx = None
         self._last_wall_gy = None
         self._gnomes = []
+        self._gibs = []
         self._gnome_spawned_this_pinch = False
         self._fill_done_this_pinch = False
         self._held_gnome = None
@@ -822,6 +962,8 @@ class SandWindow:
         self._btn_gasoline.active = (self._mode == self.MODE_GASOLINE)
         self._btn_water.active = (self._mode == self.MODE_WATER)
         self._btn_confetti.active = (self._mode == self.MODE_CONFETTI)
+        self._btn_poison.active = (self._mode == self.MODE_POISON)
+        self._btn_holywater.active = (self._mode == self.MODE_HOLYWATER)
         self._btn_fill.active = (self._mode == self.MODE_FILL)
         # Show what material fill will use
         _fill_names = {
@@ -949,6 +1091,12 @@ class SandWindow:
         if self._btn_confetti.hit(px, py):
             self._mode = self.MODE_CONFETTI
             self._update_button_states(); return
+        if self._btn_poison.hit(px, py):
+            self._mode = self.MODE_POISON
+            self._update_button_states(); return
+        if self._btn_holywater.hit(px, py):
+            self._mode = self.MODE_HOLYWATER
+            self._update_button_states(); return
         if self._btn_fill.hit(px, py):
             self._mode = self.MODE_FILL
             self._update_button_states(); return
@@ -967,6 +1115,7 @@ class SandWindow:
         if self._btn_clear.hit(px, py):
             self._state.clear_all()
             self._gnomes = []
+            self._gibs = []
             return
         if not self._in_ui_zone(px, py):
             gx, gy = int(px) // _CELL, int(py) // _CELL
@@ -1027,6 +1176,16 @@ class SandWindow:
                     rx = gx + random.randint(-5, 5)
                     ry = gy + random.randint(-5, 2)
                     self._state.add(CONFETTI, rx, ry, random.choice(_CONFETTI_COLORS))
+            elif self._mode == self.MODE_POISON:
+                for _ in range(15):
+                    rx = gx + random.randint(-3, 3)
+                    ry = gy + random.randint(-3, 1)
+                    self._state.add(POISON, rx, ry, random.choice(_POISON_COLORS))
+            elif self._mode == self.MODE_HOLYWATER:
+                for _ in range(20):
+                    rx = gx + random.randint(-4, 4)
+                    ry = gy + random.randint(-4, 1)
+                    self._state.add(HOLYWATER, rx, ry, random.choice(_HOLYWATER_COLORS))
             elif self._mode == self.MODE_FILL:
                 self._flood_fill(gx, gy)
 
@@ -1145,6 +1304,20 @@ class SandWindow:
                 self._state.add(CONFETTI, rx, ry, random.choice(_CONFETTI_COLORS))
             self._last_wall_gx = None
             self._last_wall_gy = None
+        elif self._mode == self.MODE_POISON:
+            for _ in range(8):
+                rx = gx + random.randint(-2, 2)
+                ry = gy + random.randint(-2, 1)
+                self._state.add(POISON, rx, ry, random.choice(_POISON_COLORS))
+            self._last_wall_gx = None
+            self._last_wall_gy = None
+        elif self._mode == self.MODE_HOLYWATER:
+            for _ in range(10):
+                rx = gx + random.randint(-3, 3)
+                ry = gy + random.randint(-2, 1)
+                self._state.add(HOLYWATER, rx, ry, random.choice(_HOLYWATER_COLORS))
+            self._last_wall_gx = None
+            self._last_wall_gy = None
         elif self._mode == self.MODE_FILL:
             # One-shot fill per pinch, same as gnome
             if not getattr(self, '_fill_done_this_pinch', False):
@@ -1170,7 +1343,7 @@ class SandWindow:
     _SCROLL_MODES = [
         MODE_POUR, MODE_HAND, MODE_WOOD, MODE_CONCRETE, MODE_ERASE,
         MODE_GNOME, MODE_FIRE, MODE_GUNPOWDER, MODE_NAPALM, MODE_GASOLINE,
-        MODE_WATER, MODE_CONFETTI, MODE_FILL,
+        MODE_WATER, MODE_CONFETTI, MODE_POISON, MODE_HOLYWATER, MODE_FILL,
     ]
 
     def handle_scroll(self, direction):
@@ -1182,7 +1355,7 @@ class SandWindow:
         idx = (idx + direction) % len(self._SCROLL_MODES)
         self._mode = self._SCROLL_MODES[idx]
         # Update fill material for material modes
-        if self._mode not in (self.MODE_ERASE, self.MODE_GNOME, self.MODE_HAND, self.MODE_FILL, self.MODE_CONFETTI):
+        if self._mode not in (self.MODE_ERASE, self.MODE_GNOME, self.MODE_HAND, self.MODE_FILL, self.MODE_CONFETTI, self.MODE_POISON, self.MODE_HOLYWATER):
             self._fill_material = self._mode
         self._update_button_states()
 
@@ -1198,9 +1371,59 @@ class SandWindow:
             _step(self._state, self._wind_active, self._wind_dir, self._reverse_gravity)
             _step_fire(self._state)
             _step_napalm(self._state)
+
+            # Assign zombie targets — each zombie chases nearest living gnome
+            living = [g for g in self._gnomes if g.alive and not g.is_zombie and not g.frozen]
+            for gnome in self._gnomes:
+                if gnome.is_zombie and gnome.alive and not gnome.frozen:
+                    best, best_d = None, 999.0
+                    for lg in living:
+                        d = abs(gnome.gx - lg.gx) + abs(gnome.gy - lg.gy)
+                        if d < best_d:
+                            best_d = d
+                            best = lg
+                    gnome.zombie_target = best
+
             for gnome in self._gnomes:
                 gnome.step(self._state.grid)
-            self._gnomes = [g for g in self._gnomes if g.alive]
+
+            # Zombie bite — zombie touches living gnome: both freeze 1s, then living turns zombie
+            zombies = [g for g in self._gnomes if g.alive and g.is_zombie and not g.frozen]
+            alive_live = [g for g in self._gnomes if g.alive and not g.is_zombie and not g.frozen]
+            for zg in zombies:
+                for lg in alive_live:
+                    if abs(zg.gx - lg.gx) < 3 and abs(zg.gy - lg.gy) < 3:
+                        # Freeze both for 1 second
+                        zg.frozen = True
+                        zg.freeze_start = time.time()
+                        lg.frozen = True
+                        lg.freeze_start = time.time()
+                        # Convert living to zombie after freeze
+                        lg.is_zombie = True
+                        lg.color = (30, 160, 30)
+                        lg.hat_color = (20, 100, 20)
+                        lg.has_parachute = False
+                        lg.parachute_open = False
+                        lg.celebrating = False
+                        break
+
+            # Spawn gibs when gnomes die from fire
+            new_gnomes = []
+            for gnome in self._gnomes:
+                if gnome.alive:
+                    new_gnomes.append(gnome)
+                else:
+                    # Dead gnome — spray gibs
+                    gx, gy = int(gnome.gx), int(gnome.gy)
+                    gib_color = gnome.color if not gnome.on_fire else random.choice(_GIB_COLORS)
+                    for _ in range(random.randint(6, 12)):
+                        self._gibs.append(_Gib(gx, gy, gib_color))
+            self._gnomes = new_gnomes
+
+            # Step gibs
+            for gib in self._gibs:
+                gib.step(self._state.grid)
+            self._gibs = [g for g in self._gibs if g.alive]
 
         surface.fill(_BLACK)
 
@@ -1279,13 +1502,23 @@ class SandWindow:
                 pygame.draw.line(surface, c, (sx, sy + 12), (sx + 4, sy + 22), 3)
             # Direction indicator — eye dot
             eye_x = sx + (4 * gnome.dir)
-            pygame.draw.circle(surface, (255, 255, 255), (eye_x, sy - 16), 2)
+            eye_color = (255, 0, 0) if gnome.is_zombie else (255, 255, 255)
+            pygame.draw.circle(surface, eye_color, (eye_x, sy - 16), 2)
+            # Frozen indicator — icy shimmer
+            if gnome.frozen:
+                pygame.draw.circle(surface, (150, 200, 255), (sx, sy - 5), 18, 2)
             # Fire particles around burning gnome
             if gnome.on_fire:
                 for _ in range(3):
                     fx = sx + random.randint(-8, 8)
                     fy = sy + random.randint(-18, 9)
                     pygame.draw.circle(surface, random.choice(_FIRE_COLORS), (fx, fy), random.randint(2, 4))
+
+        # Draw gibs (bouncing body pieces)
+        for gib in self._gibs:
+            gx_px = int(gib.x * _CELL + _CELL // 2)
+            gy_px = int(gib.y * _CELL + _CELL // 2)
+            pygame.draw.rect(surface, gib.color, (gx_px - 2, gy_px - 2, 5, 5))
 
         # Draw buttons
         for btn in self._buttons:

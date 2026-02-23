@@ -57,6 +57,11 @@ class App:
         self._sand = SandWindow(WINDOW_WIDTH, WINDOW_HEIGHT)
         self._cur_thumb = (0, 0)
         self._cur_index = (0, 0)
+        # Mouse input state (alternative to hand tracking)
+        self._mouse_down = False
+        self._mouse_down_pos = None
+        self._mouse_down_time = 0.0
+        self._mouse_last_click_time = 0.0
 
     @property
     def _any_app_visible(self):
@@ -311,6 +316,45 @@ class App:
                     return
                 if event.type == pygame.MOUSEWHEEL and self._sand.visible:
                     self._sand.handle_scroll(-event.y)  # scroll up = prev, down = next
+                # --- Mouse input (alternative to hand gestures) ---
+                if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    mx, my = event.pos
+                    now = time.time()
+                    self._mouse_down = True
+                    self._mouse_down_pos = (mx, my)
+                    self._mouse_down_time = now
+                    # Immediate tap for Sand buttons
+                    if self._sand.visible and self._sand._in_ui_zone(mx, my):
+                        self._sand.handle_tap(mx, my)
+                        self._mouse_btn_consumed = True
+                    else:
+                        self._mouse_btn_consumed = False
+                elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                    if self._mouse_down:
+                        mx, my = event.pos
+                        now = time.time()
+                        # Release — check if it was a tap (small movement)
+                        if self._mouse_down_pos:
+                            total = math.hypot(mx - self._mouse_down_pos[0],
+                                               my - self._mouse_down_pos[1])
+                            if total <= 15:
+                                if not getattr(self, '_mouse_btn_consumed', False):
+                                    self._tap = self._mouse_down_pos
+                                # Double-click detection
+                                if now - self._mouse_last_click_time < 0.4:
+                                    self._double_tap = self._mouse_down_pos
+                                self._mouse_last_click_time = now
+                        if self._sand.visible:
+                            self._sand.handle_pinch_end()
+                        self._mouse_down = False
+                        self._mouse_down_pos = None
+                elif event.type == pygame.MOUSEMOTION and self._mouse_down:
+                    mx, my = event.pos
+                    if self._sand.visible and self._mouse_down_pos:
+                        total = math.hypot(mx - self._mouse_down_pos[0],
+                                           my - self._mouse_down_pos[1])
+                        if total > 8:
+                            self._sand.handle_pinch(mx, my)
             hand = self.tracker.latest()
             if hand is not None:
                 self._last_hand = hand
