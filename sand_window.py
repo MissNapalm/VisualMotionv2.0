@@ -29,6 +29,7 @@ GUNPOWDER = 6
 NAPALM = 7
 GASOLINE = 8
 WATER = 9
+CONFETTI = 10
 
 _WOOD_COLOR = (139, 90, 43)
 _WOOD_COLORS = [(139, 90, 43), (120, 75, 35), (160, 105, 50), (110, 70, 30)]
@@ -81,6 +82,9 @@ class _Gnome:
         self.fall_start = 0.0           # when falling started
         self.has_parachute = True        # parachute available
         self.parachute_open = False      # currently deployed
+        # Celebration state
+        self.celebrating = False
+        self.celebrate_start = 0.0      # time.time() when celebration began
 
     def _can_walk(self, ix, iy, direction, grid):
         """Check if we can walk one step in the given direction.
@@ -123,6 +127,18 @@ class _Gnome:
                 if self.on_fire:
                     break
 
+        # Check if touching confetti — triggers celebration hop
+        if not self.celebrating and not self.on_fire:
+            for dx in range(-2, 3):
+                for dy in range(-2, 3):
+                    cx, cy = ix + dx, iy + dy
+                    if 0 <= cx < w and 0 <= cy < h and grid[cy, cx] == CONFETTI:
+                        self.celebrating = True
+                        self.celebrate_start = time.time()
+                        break
+                if self.celebrating:
+                    break
+
         # Water puts out a burning gnome
         if self.on_fire and 0 <= ix < w and 0 <= iy < h and grid[iy, ix] == WATER:
             self.on_fire = False
@@ -156,6 +172,16 @@ class _Gnome:
             self.fall_start = 0.0
             self.parachute_open = False
 
+            # --- celebration hop ---
+            if self.celebrating:
+                if time.time() - self.celebrate_start >= 3.5:
+                    self.celebrating = False
+                else:
+                    self.vy = -2.5
+                    self.gy -= 0.5
+                    self.grounded = False
+                    return  # skip walking
+
             # --- walking ---
             self.walk_timer += 1
             if self.walk_timer >= walk_interval:
@@ -180,8 +206,9 @@ class _Gnome:
                 self.fall_start = time.time()
 
             # Deploy parachute after 0.2s of falling (if still available)
+            # Don't deploy while doing a confetti celebration hop
             fall_dur = time.time() - self.fall_start
-            if fall_dur >= 0.2 and self.has_parachute and not self.parachute_open:
+            if fall_dur >= 0.2 and self.has_parachute and not self.parachute_open and not self.celebrating:
                 self.parachute_open = True
 
             # Burn parachute if gnome is on fire
@@ -225,6 +252,17 @@ class _Gnome:
                 self.alive = False
                 return
             self.gy = new_y
+
+
+# ────────────────────────────────────────────
+# Confetti
+# ────────────────────────────────────────────
+
+_CONFETTI_COLORS = [
+    (255, 50, 50), (50, 255, 50), (80, 80, 255),
+    (255, 255, 50), (255, 50, 255), (50, 255, 255),
+    (255, 150, 0), (255, 100, 200), (150, 255, 100),
+]
 
 
 class _SandState:
@@ -276,8 +314,8 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False):
     c = state.colors
     h, w = g.shape
 
-    # Find all falling particles: sand, gunpowder, gasoline, water
-    falling = (g == HEAVY) | (g == GUNPOWDER) | (g == GASOLINE) | (g == WATER)
+    # Find all falling particles: sand, gunpowder, gasoline, water, confetti
+    falling = (g == HEAVY) | (g == GUNPOWDER) | (g == GASOLINE) | (g == WATER) | (g == CONFETTI)
     if not np.any(falling):
         return
 
@@ -297,15 +335,30 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False):
     for i in range(len(ys)):
         y, x = int(ys[i]), int(xs[i])
         ptype = g[y, x]
-        if ptype not in (HEAVY, GUNPOWDER, GASOLINE, WATER):
+        if ptype not in (HEAVY, GUNPOWDER, GASOLINE, WATER, CONFETTI):
             continue  # already moved by another particle this step
         col = c[y, x].copy()
 
         # Gasoline and water are more fluid — higher lateral slide chance
-        slide_chance = 0.7 if ptype in (GASOLINE, WATER) else 0.3
+        # Confetti flutters — very high lateral drift
+        if ptype == CONFETTI:
+            slide_chance = 0.85
+        elif ptype in (GASOLINE, WATER):
+            slide_chance = 0.7
+        else:
+            slide_chance = 0.3
 
         ny = y + grav
         moved = False
+
+        # Confetti flutters — 50% chance to skip falling, just drift sideways
+        if ptype == CONFETTI and random.random() < 0.5:
+            lx = x + (1 if random.random() < 0.5 else -1)
+            if 0 <= lx < w and g[y, lx] == EMPTY:
+                g[y, x] = EMPTY
+                g[y, lx] = ptype
+                c[y, lx] = col
+            continue
 
         # Try straight down
         if 0 <= ny < h and g[ny, x] == EMPTY:
@@ -315,6 +368,11 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False):
             y = ny
             moved = True
         else:
+            # Confetti destroys on contact — can't land, just vanishes
+            if ptype == CONFETTI:
+                g[y, x] = EMPTY
+                c[y, x] = (0, 0, 0)
+                continue
             # Try diagonal left/right (random order)
             if random.random() < 0.5:
                 tries = [(x - 1, ny), (x + 1, ny)]
@@ -604,8 +662,8 @@ class _Button:
 
     def draw(self, surface, font=None):
         c = self.active_color if self.active else self.color
-        pygame.draw.rect(surface, c, self.rect, border_radius=12)
-        pygame.draw.rect(surface, (100, 100, 120), self.rect, 2, border_radius=12)
+        pygame.draw.rect(surface, c, self.rect, border_radius=8)
+        pygame.draw.rect(surface, (100, 100, 120), self.rect, 2, border_radius=8)
         f = font or self._font
         tc = _WHITE if not self.active else _BLACK
         txt = f.render(self.label, True, tc)
@@ -638,6 +696,7 @@ class SandWindow:
     MODE_GASOLINE = 10
     MODE_WATER = 11
     MODE_HAND = 12
+    MODE_CONFETTI = 13
 
     def __init__(self, window_width, window_height):
         self.visible = False
@@ -671,51 +730,53 @@ class SandWindow:
         self._build_buttons()
 
     def _build_buttons(self):
-        bw = 130
-        bh = 70
-        margin = 8
+        bw = 95
+        bh = 50
+        margin = 6
         row2_y = self._wh - bh - margin
         row1_y = row2_y - bh - margin
 
         x = margin
-        self._btn_pour = _Button(x, row1_y, bw, bh, "SAND", font_size=32); x += bw + margin
-        self._btn_hand = _Button(x, row1_y, bw, bh, "HAND", font_size=32,
+        self._btn_pour = _Button(x, row1_y, bw, bh, "SAND", font_size=26); x += bw + margin
+        self._btn_hand = _Button(x, row1_y, bw, bh, "HAND", font_size=26,
                                  color=(80, 60, 40), active_color=(220, 180, 120)); x += bw + margin
-        self._btn_wood = _Button(x, row1_y, bw, bh, "WOOD", font_size=32,
+        self._btn_wood = _Button(x, row1_y, bw, bh, "WOOD", font_size=26,
                                  color=(70, 45, 20), active_color=(180, 120, 60)); x += bw + margin
-        self._btn_concrete = _Button(x, row1_y, bw + 20, bh, "CONCRETE", font_size=28,
-                                     color=(60, 60, 65), active_color=(160, 160, 170)); x += bw + 20 + margin
-        self._btn_erase = _Button(x, row1_y, bw, bh, "ERASE", font_size=32); x += bw + margin
-        self._btn_color = _Button(x, row1_y, bw + 20, bh, "COLOR", font_size=32); x += bw + 20 + margin
-        self._btn_gnome = _Button(x, row1_y, bw, bh, "GNOME", font_size=32); x += bw + margin
-        self._btn_fire = _Button(x, row1_y, bw, bh, "FIRE", font_size=32,
+        self._btn_concrete = _Button(x, row1_y, bw + 10, bh, "CONCRT", font_size=24,
+                                     color=(60, 60, 65), active_color=(160, 160, 170)); x += bw + 10 + margin
+        self._btn_erase = _Button(x, row1_y, bw, bh, "ERASE", font_size=26); x += bw + margin
+        self._btn_color = _Button(x, row1_y, bw + 10, bh, "COLOR", font_size=26); x += bw + 10 + margin
+        self._btn_gnome = _Button(x, row1_y, bw, bh, "GNOME", font_size=26); x += bw + margin
+        self._btn_fire = _Button(x, row1_y, bw, bh, "FIRE", font_size=26,
                                  color=(80, 30, 0), active_color=(255, 120, 0)); x += bw + margin
+        self._btn_confetti = _Button(x, row1_y, bw + 10, bh, "CONFTI", font_size=24,
+                                     color=(100, 40, 100), active_color=(255, 100, 255)); x += bw + 10 + margin
 
         x = margin
-        self._btn_wind = _Button(x, row2_y, bw, bh, "WIND", font_size=32); x += bw + margin
-        self._btn_wind_dir = _Button(x, row2_y, bw, bh, "WIND >", font_size=32); x += bw + margin
-        self._btn_gravity = _Button(x, row2_y, bw + 10, bh, "GRAVITY", font_size=32); x += bw + 10 + margin
-        self._btn_clear = _Button(x, row2_y, bw, bh, "CLEAR", font_size=32); x += bw + margin
-        self._btn_fill = _Button(x, row2_y, bw, bh, "FILL", font_size=32,
+        self._btn_wind = _Button(x, row2_y, bw, bh, "WIND", font_size=26); x += bw + margin
+        self._btn_wind_dir = _Button(x, row2_y, bw, bh, "WIND >", font_size=24); x += bw + margin
+        self._btn_gravity = _Button(x, row2_y, bw + 5, bh, "GRAV", font_size=26); x += bw + 5 + margin
+        self._btn_clear = _Button(x, row2_y, bw, bh, "CLEAR", font_size=26); x += bw + margin
+        self._btn_fill = _Button(x, row2_y, bw, bh, "FILL", font_size=26,
                                  color=(50, 50, 80), active_color=(120, 180, 255)); x += bw + margin
-        self._btn_gunpowder = _Button(x, row2_y, bw + 10, bh, "GUNPOW", font_size=28,
-                                      color=(50, 50, 50), active_color=(120, 120, 120)); x += bw + 10 + margin
-        self._btn_napalm = _Button(x, row2_y, bw, bh, "NAPALM", font_size=28,
+        self._btn_gunpowder = _Button(x, row2_y, bw + 5, bh, "GUNPW", font_size=24,
+                                      color=(50, 50, 50), active_color=(120, 120, 120)); x += bw + 5 + margin
+        self._btn_napalm = _Button(x, row2_y, bw, bh, "NAPLM", font_size=24,
                                    color=(120, 30, 0), active_color=(255, 60, 0)); x += bw + margin
-        self._btn_gasoline = _Button(x, row2_y, bw, bh, "GAS", font_size=32,
+        self._btn_gasoline = _Button(x, row2_y, bw, bh, "GAS", font_size=26,
                                      color=(70, 80, 20), active_color=(200, 220, 60)); x += bw + margin
-        self._btn_water = _Button(x, row2_y, bw, bh, "WATER", font_size=30,
+        self._btn_water = _Button(x, row2_y, bw, bh, "WATER", font_size=26,
                                   color=(15, 50, 120), active_color=(40, 130, 255)); x += bw + margin
 
         quit_h = bh * 2 + margin
         self._btn_quit = _Button(self._ww - bw - margin, row1_y, bw, quit_h, "QUIT",
-                                 color=(120, 30, 30), active_color=(255, 60, 60), font_size=38)
+                                 color=(120, 30, 30), active_color=(255, 60, 60), font_size=30)
 
         self._buttons = [
             self._btn_pour, self._btn_hand, self._btn_wood, self._btn_concrete,
             self._btn_erase, self._btn_color,
             self._btn_gnome, self._btn_fire, self._btn_gunpowder, self._btn_napalm,
-            self._btn_gasoline, self._btn_water,
+            self._btn_gasoline, self._btn_water, self._btn_confetti,
             self._btn_wind, self._btn_wind_dir, self._btn_gravity, self._btn_clear,
             self._btn_fill,
             self._btn_quit,
@@ -760,6 +821,7 @@ class SandWindow:
         self._btn_napalm.active = (self._mode == self.MODE_NAPALM)
         self._btn_gasoline.active = (self._mode == self.MODE_GASOLINE)
         self._btn_water.active = (self._mode == self.MODE_WATER)
+        self._btn_confetti.active = (self._mode == self.MODE_CONFETTI)
         self._btn_fill.active = (self._mode == self.MODE_FILL)
         # Show what material fill will use
         _fill_names = {
@@ -774,7 +836,7 @@ class SandWindow:
         self._btn_gravity.active = self._reverse_gravity
         self._btn_wind.label = "WIND ON" if self._wind_active else "WIND"
         self._btn_wind_dir.label = "< WIND" if self._wind_dir == -1 else "WIND >"
-        self._btn_gravity.label = "GRAV UP" if self._reverse_gravity else "GRAVITY"
+        self._btn_gravity.label = "GRV UP" if self._reverse_gravity else "GRAV"
         self._btn_color.swatch_color = self._color
 
     def _in_ui_zone(self, px, py):
@@ -884,6 +946,9 @@ class SandWindow:
             self._mode = self.MODE_WATER
             self._fill_material = self.MODE_WATER
             self._update_button_states(); return
+        if self._btn_confetti.hit(px, py):
+            self._mode = self.MODE_CONFETTI
+            self._update_button_states(); return
         if self._btn_fill.hit(px, py):
             self._mode = self.MODE_FILL
             self._update_button_states(); return
@@ -957,6 +1022,11 @@ class SandWindow:
                     rx = gx + random.randint(-5, 5)
                     ry = gy + random.randint(-5, 2)
                     self._state.add(WATER, rx, ry, random.choice(_WATER_COLORS))
+            elif self._mode == self.MODE_CONFETTI:
+                for _ in range(25):
+                    rx = gx + random.randint(-5, 5)
+                    ry = gy + random.randint(-5, 2)
+                    self._state.add(CONFETTI, rx, ry, random.choice(_CONFETTI_COLORS))
             elif self._mode == self.MODE_FILL:
                 self._flood_fill(gx, gy)
 
@@ -1068,6 +1138,13 @@ class SandWindow:
                 self._state.add(WATER, rx, ry, random.choice(_WATER_COLORS))
             self._last_wall_gx = None
             self._last_wall_gy = None
+        elif self._mode == self.MODE_CONFETTI:
+            for _ in range(10):
+                rx = gx + random.randint(-3, 3)
+                ry = gy + random.randint(-2, 1)
+                self._state.add(CONFETTI, rx, ry, random.choice(_CONFETTI_COLORS))
+            self._last_wall_gx = None
+            self._last_wall_gy = None
         elif self._mode == self.MODE_FILL:
             # One-shot fill per pinch, same as gnome
             if not getattr(self, '_fill_done_this_pinch', False):
@@ -1093,7 +1170,7 @@ class SandWindow:
     _SCROLL_MODES = [
         MODE_POUR, MODE_HAND, MODE_WOOD, MODE_CONCRETE, MODE_ERASE,
         MODE_GNOME, MODE_FIRE, MODE_GUNPOWDER, MODE_NAPALM, MODE_GASOLINE,
-        MODE_WATER, MODE_FILL,
+        MODE_WATER, MODE_CONFETTI, MODE_FILL,
     ]
 
     def handle_scroll(self, direction):
@@ -1105,7 +1182,7 @@ class SandWindow:
         idx = (idx + direction) % len(self._SCROLL_MODES)
         self._mode = self._SCROLL_MODES[idx]
         # Update fill material for material modes
-        if self._mode not in (self.MODE_ERASE, self.MODE_GNOME, self.MODE_HAND, self.MODE_FILL):
+        if self._mode not in (self.MODE_ERASE, self.MODE_GNOME, self.MODE_HAND, self.MODE_FILL, self.MODE_CONFETTI):
             self._fill_material = self._mode
         self._update_button_states()
 
@@ -1180,7 +1257,12 @@ class SandWindow:
             arm_wave = 4 if gnome.grounded and gnome.walk_timer == 0 else 0
             if gnome.on_fire:
                 arm_wave = random.randint(-5, 5)  # frantic arm waving
-            if gnome.parachute_open:
+            if gnome.celebrating:
+                # Arms raised in celebration — wave them!
+                wave = random.randint(-3, 3)
+                pygame.draw.line(surface, c, (sx, sy), (sx - 10, sy - 14 + wave), 3)
+                pygame.draw.line(surface, c, (sx, sy), (sx + 10, sy - 14 - wave), 3)
+            elif gnome.parachute_open:
                 # Arms up holding chute strings
                 pygame.draw.line(surface, c, (sx, sy), (sx - 10, sy - 14), 3)
                 pygame.draw.line(surface, c, (sx, sy), (sx + 10, sy - 14), 3)

@@ -19,9 +19,11 @@ def _remap(v, lo, hi):
     """Remap normalised coord from the [lo..hi] region to 0..1."""
     return max(0.0, min(1.0, (v - lo) / (hi - lo)))
 
-# Padding: asymmetric so right side isn't clipped early.
-# Camera left 15%, right 8%, top 10%, bottom 10%.
-_PAD_L, _PAD_R = 0.15, 0.08
+# Padding: how much of the camera edges to ignore (hand partially out of frame).
+# With 1280x720 (16:9) camera we have wide horizontal FOV — generous padding
+# means the hand doesn't need to reach the very edge of the camera to hit
+# the screen edge.  Larger values = easier to reach that side.
+_PAD_L, _PAD_R = 0.18, 0.18
 _PAD_T, _PAD_B = 0.10, 0.10
 
 

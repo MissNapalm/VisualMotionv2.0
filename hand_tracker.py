@@ -37,7 +37,7 @@ class _Landmark:
 
 class HandTracker:
     def __init__(self, *, max_hands=1, detection_confidence=0.3,
-                 tracking_confidence=0.3, cam_width=640, cam_height=480):
+                 tracking_confidence=0.3, cam_width=1280, cam_height=720):
         model_path = _find_model()
         options = HandLandmarkerOptions(
             base_options=mp_base_options.BaseOptions(model_asset_path=model_path),

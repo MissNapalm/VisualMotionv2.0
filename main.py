@@ -323,7 +323,7 @@ class App:
                 self._cur_thumb = (tx, ty)
                 self._cur_index = (ix, iy)
                 # Pinch detection uses RAW (unaveraged) landmarks — zero lag
-                # Hysteresis: easy to start (0.08), sticky to hold (release at 0.12)
+                # Hysteresis: easy to start (0.065), sticky to hold (release at 0.09)
                 raw = self.tracker.latest_raw() or hand
                 pdist = pinch_distance(raw)
                 if st.pinch_prev:
