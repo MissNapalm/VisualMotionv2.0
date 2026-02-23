@@ -325,12 +325,7 @@ class App:
                     self._mouse_down = True
                     self._mouse_down_pos = (mx, my)
                     self._mouse_down_time = now
-                    # Immediate tap for Sand buttons
-                    if self._sand.visible and self._sand._in_ui_zone(mx, my):
-                        self._sand.handle_tap(mx, my)
-                        self._mouse_btn_consumed = True
-                    else:
-                        self._mouse_btn_consumed = False
+                    self._mouse_btn_consumed = False
                 elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
                     if self._mouse_down:
                         mx, my = event.pos
