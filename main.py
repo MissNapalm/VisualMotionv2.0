@@ -341,15 +341,9 @@ class App:
                                                my - self._mouse_down_pos[1])
                             if total <= 15:
                                 if self._sand.visible:
-                                    # Double-click = line tool
+                                    # Double-click only = line tool (no single-click action)
                                     if now - self._mouse_last_click_time < 0.4:
                                         self._sand.handle_double_click(mx, my)
-                                    elif not getattr(self, '_mouse_btn_consumed', False):
-                                        # Single click on canvas = paint one dab
-                                        self._sand.handle_pinch(mx, my)
-                                else:
-                                    if not getattr(self, '_mouse_btn_consumed', False):
-                                        self._tap = self._mouse_down_pos
                                 self._mouse_last_click_time = now
                         if self._sand.visible:
                             self._sand.handle_pinch_end()
