@@ -77,6 +77,10 @@ class _Gnome:
         self.alive = True
         self.on_fire = False
         self.fire_start_time = 0.0
+        self.held = False               # being carried by HAND mode
+        self.fall_start = 0.0           # when falling started
+        self.has_parachute = True        # parachute available
+        self.parachute_open = False      # currently deployed
 
     def _can_walk(self, ix, iy, direction, grid):
         """Check if we can walk one step in the given direction.
@@ -96,6 +100,8 @@ class _Gnome:
                 return None  # can't climb
 
     def step(self, grid):
+        if self.held:
+            return  # being carried, skip physics
         h, w = grid.shape
         ix, iy = int(self.gx), int(self.gy)
 
@@ -114,8 +120,8 @@ class _Gnome:
         if self.on_fire and 0 <= ix < w and 0 <= iy < h and grid[iy, ix] == WATER:
             self.on_fire = False
 
-        # Die after 7 seconds on fire
-        if self.on_fire and (time.time() - self.fire_start_time) > 7.0:
+        # Die after 3 seconds on fire
+        if self.on_fire and (time.time() - self.fire_start_time) > 3.0:
             self.alive = False
             return
 
@@ -134,6 +140,8 @@ class _Gnome:
             self.vy = 0.0
             self.grounded = True
             self.gy = float(iy)
+            self.fall_start = 0.0
+            self.parachute_open = False
 
             # --- walking ---
             self.walk_timer += 1
@@ -155,7 +163,37 @@ class _Gnome:
         else:
             # Falling
             self.grounded = False
-            self.vy = min(self.vy + 0.4, 3.0)   # gravity acceleration, terminal vel
+            if self.fall_start == 0.0:
+                self.fall_start = time.time()
+
+            # Deploy parachute after 0.2s of falling (if still available)
+            fall_dur = time.time() - self.fall_start
+            if fall_dur >= 0.2 and self.has_parachute and not self.parachute_open:
+                self.parachute_open = True
+
+            # Burn parachute if gnome is on fire
+            if self.on_fire and self.has_parachute:
+                self.has_parachute = False
+                self.parachute_open = False
+
+            # Check if fire/napalm nearby burns the parachute
+            if self.parachute_open:
+                for ddx in range(-2, 3):
+                    for ddy in range(-4, 1):
+                        cx, cy = ix + ddx, iy + ddy
+                        if 0 <= cx < w and 0 <= cy < h and grid[cy, cx] in (FIRE, NAPALM):
+                            self.has_parachute = False
+                            self.parachute_open = False
+                            break
+                    else:
+                        continue
+                    break
+
+            if self.parachute_open:
+                # Parachute: slow descent
+                self.vy = min(self.vy + 0.05, 0.5)
+            else:
+                self.vy = min(self.vy + 0.4, 3.0)   # gravity acceleration, terminal vel
             new_y = self.gy + self.vy
             # Check each cell we'd pass through
             target_y = int(new_y)
@@ -581,6 +619,7 @@ class SandWindow:
     MODE_NAPALM = 9
     MODE_GASOLINE = 10
     MODE_WATER = 11
+    MODE_HAND = 12
 
     def __init__(self, window_width, window_height):
         self.visible = False
@@ -603,6 +642,7 @@ class SandWindow:
         self._gnomes = []
         self._gnome_spawned_this_pinch = False
         self._fill_done_this_pinch = False
+        self._held_gnome = None
         self._pixel_surf = pygame.Surface((self._gw, self._gh), pygame.SRCALPHA)
         self._buttons = []
         self._build_buttons()
@@ -616,7 +656,8 @@ class SandWindow:
 
         x = margin
         self._btn_pour = _Button(x, row1_y, bw, bh, "SAND", font_size=32); x += bw + margin
-        self._btn_wall = _Button(x, row1_y, bw, bh, "WALL", font_size=32); x += bw + margin
+        self._btn_hand = _Button(x, row1_y, bw, bh, "HAND", font_size=32,
+                                 color=(80, 60, 40), active_color=(220, 180, 120)); x += bw + margin
         self._btn_wood = _Button(x, row1_y, bw, bh, "WOOD", font_size=32,
                                  color=(70, 45, 20), active_color=(180, 120, 60)); x += bw + margin
         self._btn_concrete = _Button(x, row1_y, bw + 20, bh, "CONCRETE", font_size=28,
@@ -648,7 +689,7 @@ class SandWindow:
                                  color=(120, 30, 30), active_color=(255, 60, 60), font_size=38)
 
         self._buttons = [
-            self._btn_pour, self._btn_wall, self._btn_wood, self._btn_concrete,
+            self._btn_pour, self._btn_hand, self._btn_wood, self._btn_concrete,
             self._btn_erase, self._btn_color,
             self._btn_gnome, self._btn_fire, self._btn_gunpowder, self._btn_napalm,
             self._btn_gasoline, self._btn_water,
@@ -674,6 +715,7 @@ class SandWindow:
         self._gnomes = []
         self._gnome_spawned_this_pinch = False
         self._fill_done_this_pinch = False
+        self._held_gnome = None
         self._update_button_states()
 
     def close(self):
@@ -685,7 +727,7 @@ class SandWindow:
 
     def _update_button_states(self):
         self._btn_pour.active = (self._mode == self.MODE_POUR)
-        self._btn_wall.active = (self._mode == self.MODE_WALL)
+        self._btn_hand.active = (self._mode == self.MODE_HAND)
         self._btn_wood.active = (self._mode == self.MODE_WOOD)
         self._btn_concrete.active = (self._mode == self.MODE_CONCRETE)
         self._btn_erase.active = (self._mode == self.MODE_ERASE)
@@ -698,7 +740,7 @@ class SandWindow:
         self._btn_fill.active = (self._mode == self.MODE_FILL)
         # Show what material fill will use
         _fill_names = {
-            self.MODE_POUR: "FILL:S", self.MODE_WALL: "FILL:W",
+            self.MODE_POUR: "FILL:S",
             self.MODE_WOOD: "FILL:Wd", self.MODE_CONCRETE: "FILL:C",
             self.MODE_FIRE: "FILL:F", self.MODE_GUNPOWDER: "FILL:GP",
             self.MODE_NAPALM: "FILL:N", self.MODE_GASOLINE: "FILL:G",
@@ -782,9 +824,8 @@ class SandWindow:
             self._mode = self.MODE_POUR
             self._fill_material = self.MODE_POUR
             self._update_button_states(); return
-        if self._btn_wall.hit(px, py):
-            self._mode = self.MODE_WALL
-            self._fill_material = self.MODE_WALL
+        if self._btn_hand.hit(px, py):
+            self._mode = self.MODE_HAND
             self._update_button_states(); return
         if self._btn_wood.hit(px, py):
             self._mode = self.MODE_WOOD
@@ -846,10 +887,18 @@ class SandWindow:
                     rx = gx + random.randint(-5, 5)
                     ry = gy + random.randint(-5, 2)
                     self._state.add(HEAVY, rx, ry, self._color)
-            elif self._mode == self.MODE_WALL:
-                for dx in range(-1, 2):
-                    for dy in range(-1, 2):
-                        self._state.add(STATIC, gx + dx, gy + dy, _WALL_COLOR)
+            elif self._mode == self.MODE_HAND:
+                # Pick up nearest gnome within 6 grid cells
+                best, best_d = None, 6.0
+                for gnome in self._gnomes:
+                    d = math.hypot(gnome.gx - gx, gnome.gy - gy)
+                    if d < best_d:
+                        best_d = d
+                        best = gnome
+                if best:
+                    best.held = True
+                    best.vy = 0.0
+                    self._held_gnome = best
             elif self._mode == self.MODE_WOOD:
                 for dx in range(-1, 2):
                     for dy in range(-1, 2):
@@ -901,23 +950,25 @@ class SandWindow:
                 self._state.add(HEAVY, rx, ry, self._color)
             self._last_wall_gx = None
             self._last_wall_gy = None
-        elif self._mode == self.MODE_WALL:
-            # Draw at current position; connect with short bresenham only if
-            # the previous point is close (within 8 cells) to avoid long jumps
-            if (self._last_wall_gx is not None and self._last_wall_gy is not None
-                    and abs(gx - self._last_wall_gx) <= 8
-                    and abs(gy - self._last_wall_gy) <= 8):
-                line_pts = _bresenham(self._last_wall_gx, self._last_wall_gy, gx, gy)
-                for lx, ly in line_pts:
-                    for dx in range(-1, 2):
-                        for dy in range(-1, 2):
-                            self._state.add(STATIC, lx + dx, ly + dy, _WALL_COLOR)
+        elif self._mode == self.MODE_HAND:
+            # Carry held gnome to cursor position
+            if self._held_gnome and self._held_gnome.alive:
+                self._held_gnome.gx = float(gx)
+                self._held_gnome.gy = float(gy)
             else:
-                for dx in range(-1, 2):
-                    for dy in range(-1, 2):
-                        self._state.add(STATIC, gx + dx, gy + dy, _WALL_COLOR)
-            self._last_wall_gx = gx
-            self._last_wall_gy = gy
+                # Try to grab nearest gnome
+                best, best_d = None, 6.0
+                for gnome in self._gnomes:
+                    d = math.hypot(gnome.gx - gx, gnome.gy - gy)
+                    if d < best_d:
+                        best_d = d
+                        best = gnome
+                if best:
+                    best.held = True
+                    best.vy = 0.0
+                    self._held_gnome = best
+            self._last_wall_gx = None
+            self._last_wall_gy = None
         elif self._mode == self.MODE_WOOD:
             if (self._last_wall_gx is not None and self._last_wall_gy is not None
                     and abs(gx - self._last_wall_gx) <= 8
@@ -1007,6 +1058,13 @@ class SandWindow:
         self._fill_done_this_pinch = False
         self._last_wall_gx = None
         self._last_wall_gy = None
+        # Drop held gnome
+        if self._held_gnome:
+            self._held_gnome.held = False
+            self._held_gnome.vy = 0.0
+            self._held_gnome.fall_start = 0.0
+            self._held_gnome.parachute_open = False
+            self._held_gnome = None
 
     def draw(self, surface, gui_scale):
         now = time.time()
@@ -1059,13 +1117,35 @@ class SandWindow:
                 (sx + 8, sy - 22),      # right brim
                 (sx + gnome.dir * 3, sy - 38),  # pointy tip leans in walk dir
             ])
+            # Parachute — drawn above gnome when deployed
+            if gnome.parachute_open:
+                chute_c = (240, 240, 240)
+                # Canopy arc
+                pygame.draw.arc(surface, chute_c,
+                                (sx - 22, sy - 60, 44, 36), 0, math.pi, 3)
+                # Fill canopy
+                pygame.draw.ellipse(surface, (220, 220, 230),
+                                    (sx - 22, sy - 60, 44, 18))
+                # Strings from canopy edges to shoulders
+                pygame.draw.line(surface, chute_c, (sx - 20, sy - 50), (sx - 6, sy - 22), 1)
+                pygame.draw.line(surface, chute_c, (sx + 20, sy - 50), (sx + 6, sy - 22), 1)
+                pygame.draw.line(surface, chute_c, (sx, sy - 58), (sx, sy - 38), 1)
+            # Held indicator — draw a little hand icon above
+            if gnome.held:
+                pygame.draw.circle(surface, (220, 180, 120), (sx, sy - 46), 6)
+                pygame.draw.line(surface, (220, 180, 120), (sx, sy - 40), (sx, sy - 30), 2)
             # Body
             pygame.draw.line(surface, c, (sx, sy - 8), (sx, sy + 12), 3)
             # Arms
             arm_wave = 4 if gnome.grounded and gnome.walk_timer == 0 else 0
             if gnome.on_fire:
                 arm_wave = random.randint(-6, 6)  # frantic arm waving
-            pygame.draw.line(surface, c, (sx - 10, sy + arm_wave), (sx + 10, sy - arm_wave), 3)
+            if gnome.parachute_open:
+                # Arms up holding chute strings
+                pygame.draw.line(surface, c, (sx, sy), (sx - 12, sy - 16), 3)
+                pygame.draw.line(surface, c, (sx, sy), (sx + 12, sy - 16), 3)
+            else:
+                pygame.draw.line(surface, c, (sx - 10, sy + arm_wave), (sx + 10, sy - arm_wave), 3)
             # Legs — animate walking
             if gnome.grounded:
                 leg_off = 8 if gnome.walk_timer == 0 else 4
