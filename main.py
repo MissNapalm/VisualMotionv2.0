@@ -212,21 +212,7 @@ class App:
                         st.selected_card, st.selected_category = ci, ca
                         st.zoom_target = 1.0
                         print(f"Selected: {name} (card {ci}, category {ca})")
-                        break
-            self._tap = None
-        if self._double_tap:
-            dx, dy = self._double_tap
-            if self._todo.visible:
-                if not self._todo._keyboard_open:
-                    self._todo.close()
-                    print("Closed todo window (double pinch)")
-            elif self._weather.visible:
-                self._weather.close()
-                print("Closed weather window (double pinch)")
-            else:
-                for rect, ci, ca in all_rects:
-                    if rect.collidepoint(dx, dy):
-                        name = CATEGORIES[ca][ci]
+                        # Single tap opens apps directly
                         if name == "Weather":
                             self._weather.open()
                             if self._snd_doublepinch:
@@ -242,9 +228,17 @@ class App:
                             if self._snd_doublepinch:
                                 self._snd_doublepinch.play()
                             print("Opened Sand")
-                        else:
-                            print(f"Double pinch on {name}")
                         break
+            self._tap = None
+        if self._double_tap:
+            dx, dy = self._double_tap
+            if self._todo.visible:
+                if not self._todo._keyboard_open:
+                    self._todo.close()
+                    print("Closed todo window (double pinch)")
+            elif self._weather.visible:
+                self._weather.close()
+                print("Closed weather window (double pinch)")
             self._double_tap = None
 
     def _draw(self, hand, pinch_now):
