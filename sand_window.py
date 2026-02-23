@@ -741,7 +741,7 @@ def _explode_bomb(state, bx, by, gnomes, gibs, is_fire=False):
                 g[ny, nx] = EMPTY
                 c[ny, nx] = (0, 0, 0)
 
-    # Fill blast area: firebomb sprays napalm, regular bomb leaves fire at center
+    # Fill blast area: firebomb sprays napalm, regular bomb just clears
     if is_fire:
         # Napalm fills most of the blast
         for dy in range(-radius, radius + 1):
@@ -752,17 +752,7 @@ def _explode_bomb(state, bx, by, gnomes, gibs, is_fire=False):
                 if 0 <= nx < w and 0 <= ny < h and g[ny, nx] == EMPTY:
                     g[ny, nx] = NAPALM
                     c[ny, nx] = random.choice(_NAPALM_COLORS)
-    else:
-        # Small fire core at center
-        fire_r = max(3, radius // 4)
-        for dy in range(-fire_r, fire_r + 1):
-            for dx in range(-fire_r, fire_r + 1):
-                if math.hypot(dx, dy) > fire_r:
-                    continue
-                nx, ny = cx + dx, cy + dy
-                if 0 <= nx < w and 0 <= ny < h and g[ny, nx] == EMPTY:
-                    g[ny, nx] = FIRE
-                    c[ny, nx] = random.choice(_FIRE_COLORS)
+    # Regular bomb: just the circle of destruction, no fire
 
     # Kill gnomes in blast radius — gibs fly out
     for gnome in gnomes:
