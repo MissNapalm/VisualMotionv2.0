@@ -713,22 +713,19 @@ class _Bomb:
 
 
 def _explode_bomb(state, bx, by, gnomes, gibs, is_fire=False):
-    """Force-field explosion: pushes ALL particles outward in a circle.
-    Inner core gets fire/napalm, everything else is shoved radially.
-    is_fire: if True, spray napalm instead of fire+clearing."""
+    """Simple explosion: destroys everything in a circle.
+    is_fire: if True, fills the blast area with napalm instead of just clearing."""
     g = state.grid
     c = state.colors
     h, w = g.shape
     cx, cy = int(bx), int(by)
     radius = _BOMB_RADIUS
-    push_radius = radius + 20  # force field reaches well beyond visual blast
 
-    # Collect every non-empty particle inside the push radius
-    push_list = []
-    for dy in range(-push_radius, push_radius + 1):
-        for dx in range(-push_radius, push_radius + 1):
+    # Destroy everything inside the blast radius
+    for dy in range(-radius, radius + 1):
+        for dx in range(-radius, radius + 1):
             dist = math.hypot(dx, dy)
-            if dist > push_radius or dist < 0.5:
+            if dist > radius:
                 continue
             nx, ny = cx + dx, cy + dy
             if 0 <= nx < w and 0 <= ny < h:
@@ -738,62 +735,35 @@ def _explode_bomb(state, bx, by, gnomes, gibs, is_fire=False):
                 # Chain-react gunpowder
                 if cell == GUNPOWDER:
                     _ignite_gunpowder(state, nx, ny)
-                push_list.append((dist, dx, dy, nx, ny))
+                    continue
+                # Clear the cell
+                g[ny, nx] = EMPTY
+                c[ny, nx] = (0, 0, 0)
 
-    # Sort furthest-first so outer particles move before inner ones land on them
-    push_list.sort(key=lambda t: -t[0])
-
-    for dist, dx, dy, nx, ny in push_list:
-        cell = g[ny, nx]
-        if cell == EMPTY:
-            continue  # already moved by an earlier iteration
-        angle = math.atan2(dy, dx)
-        # Push strength: strongest at center, fading outward
-        frac = 1.0 - dist / push_radius
-        if dist < radius * 0.3:
-            strength = int(push_radius * 0.9)   # core: fling far
-        elif dist < radius:
-            strength = max(3, int(push_radius * 0.7 * frac))
-        else:
-            strength = max(1, int(6 * frac))     # outer ring: gentle shove
-
-        # Pick up the particle
-        saved_cell = cell
-        saved_color = tuple(c[ny, nx])
-        g[ny, nx] = EMPTY
-        c[ny, nx] = (0, 0, 0)
-
-        # Walk outward along the angle, find the furthest empty cell
-        placed = False
-        for step in range(strength, 0, -1):
-            tx = nx + int(math.cos(angle) * step)
-            ty = ny + int(math.sin(angle) * step)
-            if 0 <= tx < w and 0 <= ty < h and g[ty, tx] == EMPTY:
-                g[ty, tx] = saved_cell
-                c[ty, tx] = saved_color
-                placed = True
-                break
-        if not placed:
-            # Couldn't push — put it back
-            g[ny, nx] = saved_cell
-            c[ny, nx] = saved_color
-
-    # Small fire core at the very center
-    fire_r = max(3, radius // 4)
-    for dy in range(-fire_r, fire_r + 1):
-        for dx in range(-fire_r, fire_r + 1):
-            if math.hypot(dx, dy) > fire_r:
-                continue
-            nx, ny = cx + dx, cy + dy
-            if 0 <= nx < w and 0 <= ny < h and g[ny, nx] == EMPTY:
-                if is_fire:
+    # Fill blast area: firebomb sprays napalm, regular bomb leaves fire at center
+    if is_fire:
+        # Napalm fills most of the blast
+        for dy in range(-radius, radius + 1):
+            for dx in range(-radius, radius + 1):
+                if math.hypot(dx, dy) > radius * 0.8:
+                    continue
+                nx, ny = cx + dx, cy + dy
+                if 0 <= nx < w and 0 <= ny < h and g[ny, nx] == EMPTY:
                     g[ny, nx] = NAPALM
                     c[ny, nx] = random.choice(_NAPALM_COLORS)
-                else:
+    else:
+        # Small fire core at center
+        fire_r = max(3, radius // 4)
+        for dy in range(-fire_r, fire_r + 1):
+            for dx in range(-fire_r, fire_r + 1):
+                if math.hypot(dx, dy) > fire_r:
+                    continue
+                nx, ny = cx + dx, cy + dy
+                if 0 <= nx < w and 0 <= ny < h and g[ny, nx] == EMPTY:
                     g[ny, nx] = FIRE
                     c[ny, nx] = random.choice(_FIRE_COLORS)
 
-    # Kill gnomes in blast radius
+    # Kill gnomes in blast radius — gibs fly out
     for gnome in gnomes:
         if not gnome.alive:
             continue
@@ -807,13 +777,6 @@ def _explode_bomb(state, bx, by, gnomes, gibs, is_fire=False):
                 gb.vx = math.cos(angle) * speed + random.uniform(-1.5, 1.5)
                 gb.vy = math.sin(angle) * speed + random.uniform(-4.0, -1.0)
                 gibs.append(gb)
-        elif dist < force_radius * 1.2:
-            angle = math.atan2(gnome.gy - cy, gnome.gx - cx)
-            push = 4.0 * (1.0 - dist / (force_radius * 1.2))
-            gnome.vy = -push * 2.5
-            gnome.gx += math.cos(angle) * push * 2
-            gnome.grounded = False
-            gnome.fall_start = time.time()
 
 
 # ────────────────────────────────────────────
