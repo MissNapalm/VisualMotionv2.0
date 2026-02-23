@@ -111,10 +111,10 @@ class _Gnome:
             self.alive = False
             return
 
-        # Check if standing in or near fire (1-cell radius)
+        # Check if standing in or near fire (2-cell radius)
         if not self.on_fire:
-            for dx in range(-1, 2):
-                for dy in range(-1, 2):
+            for dx in range(-2, 3):
+                for dy in range(-2, 3):
                     cx, cy = ix + dx, iy + dy
                     if 0 <= cx < w and 0 <= cy < h and grid[cy, cx] in (FIRE, NAPALM):
                         self.on_fire = True
@@ -132,14 +132,14 @@ class _Gnome:
             self.alive = False
             return
 
-        # Walk speed: every 3 ticks normally, every 2 on fire, every 6 in water (50% speed)
+        # Walk speed: every 5 ticks normally, every 3 on fire, every 10 in water (50% speed)
         in_water = (0 <= ix < w and 0 <= iy < h and grid[iy, ix] == WATER)
         if self.on_fire:
-            walk_interval = 2
-        elif in_water:
-            walk_interval = 6
-        else:
             walk_interval = 3
+        elif in_water:
+            walk_interval = 10
+        else:
+            walk_interval = 5
 
         # --- gravity ---
         below_y = iy + 1
@@ -1137,72 +1137,72 @@ class SandWindow:
         scaled = pygame.transform.scale(surf_small, (self._ww, self._wh))
         surface.blit(scaled, (0, 0))
 
-        # Draw gnomes as stick figures (2× size)
+        # Draw gnomes as stick figures
         for gnome in self._gnomes:
             sx = int(gnome.gx * _CELL + _CELL // 2)
-            # Offset sy so feet (sy+24) land on the top of the cell below
-            sy = int(gnome.gy * _CELL + _CELL) - 24
+            # Offset sy so feet land on the top of the cell below
+            sy = int(gnome.gy * _CELL + _CELL) - 17
             c = gnome.color
             # If on fire, flicker between orange/red
             if gnome.on_fire:
                 c = random.choice([(255, 80, 0), (255, 0, 0), (255, 180, 0)])
 
             # Head
-            pygame.draw.circle(surface, c, (sx, sy - 16), 8)
+            pygame.draw.circle(surface, c, (sx, sy - 11), 6)
             # Hat — pointy gnome hat
             hat_c = gnome.hat_color if not gnome.on_fire else c
             pygame.draw.polygon(surface, hat_c, [
-                (sx - 8, sy - 22),      # left brim
-                (sx + 8, sy - 22),      # right brim
-                (sx + gnome.dir * 3, sy - 38),  # pointy tip leans in walk dir
+                (sx - 6, sy - 15),      # left brim
+                (sx + 6, sy - 15),      # right brim
+                (sx + gnome.dir * 2, sy - 27),  # pointy tip leans in walk dir
             ])
             # Parachute — drawn above gnome when deployed
             if gnome.parachute_open:
                 chute_c = (240, 240, 240)
                 # Canopy arc
                 pygame.draw.arc(surface, chute_c,
-                                (sx - 22, sy - 60, 44, 36), 0, math.pi, 3)
+                                (sx - 16, sy - 44, 32, 26), 0, math.pi, 2)
                 # Fill canopy
                 pygame.draw.ellipse(surface, (220, 220, 230),
-                                    (sx - 22, sy - 60, 44, 18))
+                                    (sx - 16, sy - 44, 32, 13))
                 # Strings from canopy edges to shoulders
-                pygame.draw.line(surface, chute_c, (sx - 20, sy - 50), (sx - 6, sy - 22), 1)
-                pygame.draw.line(surface, chute_c, (sx + 20, sy - 50), (sx + 6, sy - 22), 1)
-                pygame.draw.line(surface, chute_c, (sx, sy - 58), (sx, sy - 38), 1)
+                pygame.draw.line(surface, chute_c, (sx - 14, sy - 36), (sx - 4, sy - 15), 1)
+                pygame.draw.line(surface, chute_c, (sx + 14, sy - 36), (sx + 4, sy - 15), 1)
+                pygame.draw.line(surface, chute_c, (sx, sy - 42), (sx, sy - 27), 1)
             # Held indicator — draw a little hand icon above
             if gnome.held:
-                pygame.draw.circle(surface, (220, 180, 120), (sx, sy - 46), 6)
-                pygame.draw.line(surface, (220, 180, 120), (sx, sy - 40), (sx, sy - 30), 2)
+                pygame.draw.circle(surface, (220, 180, 120), (sx, sy - 33), 4)
+                pygame.draw.line(surface, (220, 180, 120), (sx, sy - 29), (sx, sy - 22), 2)
             # Body
-            pygame.draw.line(surface, c, (sx, sy - 8), (sx, sy + 12), 3)
+            pygame.draw.line(surface, c, (sx, sy - 5), (sx, sy + 9), 2)
             # Arms
-            arm_wave = 4 if gnome.grounded and gnome.walk_timer == 0 else 0
+            arm_wave = 3 if gnome.grounded and gnome.walk_timer == 0 else 0
             if gnome.on_fire:
-                arm_wave = random.randint(-6, 6)  # frantic arm waving
+                arm_wave = random.randint(-4, 4)  # frantic arm waving
             if gnome.parachute_open:
                 # Arms up holding chute strings
-                pygame.draw.line(surface, c, (sx, sy), (sx - 12, sy - 16), 3)
-                pygame.draw.line(surface, c, (sx, sy), (sx + 12, sy - 16), 3)
+                pygame.draw.line(surface, c, (sx, sy), (sx - 8, sy - 11), 2)
+                pygame.draw.line(surface, c, (sx, sy), (sx + 8, sy - 11), 2)
             else:
-                pygame.draw.line(surface, c, (sx - 10, sy + arm_wave), (sx + 10, sy - arm_wave), 3)
+                pygame.draw.line(surface, c, (sx - 7, sy + arm_wave), (sx + 7, sy - arm_wave), 2)
             # Legs — animate walking
             if gnome.grounded:
-                leg_off = 8 if gnome.walk_timer == 0 else 4
-                pygame.draw.line(surface, c, (sx, sy + 12), (sx - leg_off, sy + 24), 3)
-                pygame.draw.line(surface, c, (sx, sy + 12), (sx + leg_off, sy + 24), 3)
+                leg_off = 6 if gnome.walk_timer == 0 else 3
+                pygame.draw.line(surface, c, (sx, sy + 9), (sx - leg_off, sy + 17), 2)
+                pygame.draw.line(surface, c, (sx, sy + 9), (sx + leg_off, sy + 17), 2)
             else:
                 # Falling — legs together
-                pygame.draw.line(surface, c, (sx, sy + 12), (sx - 4, sy + 24), 3)
-                pygame.draw.line(surface, c, (sx, sy + 12), (sx + 4, sy + 24), 3)
+                pygame.draw.line(surface, c, (sx, sy + 9), (sx - 3, sy + 17), 2)
+                pygame.draw.line(surface, c, (sx, sy + 9), (sx + 3, sy + 17), 2)
             # Direction indicator — eye dot
-            eye_x = sx + (4 * gnome.dir)
-            pygame.draw.circle(surface, (255, 255, 255), (eye_x, sy - 18), 2)
+            eye_x = sx + (3 * gnome.dir)
+            pygame.draw.circle(surface, (255, 255, 255), (eye_x, sy - 13), 1)
             # Fire particles around burning gnome
             if gnome.on_fire:
                 for _ in range(3):
-                    fx = sx + random.randint(-8, 8)
-                    fy = sy + random.randint(-20, 10)
-                    pygame.draw.circle(surface, random.choice(_FIRE_COLORS), (fx, fy), random.randint(2, 4))
+                    fx = sx + random.randint(-6, 6)
+                    fy = sy + random.randint(-14, 7)
+                    pygame.draw.circle(surface, random.choice(_FIRE_COLORS), (fx, fy), random.randint(1, 3))
 
         # Draw buttons
         self._update_button_states()
