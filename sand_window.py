@@ -1066,6 +1066,26 @@ class SandWindow:
             self._held_gnome.parachute_open = False
             self._held_gnome = None
 
+    # Ordered list of modes the scroll wheel cycles through
+    _SCROLL_MODES = [
+        MODE_POUR, MODE_HAND, MODE_WOOD, MODE_CONCRETE, MODE_ERASE,
+        MODE_GNOME, MODE_FIRE, MODE_GUNPOWDER, MODE_NAPALM, MODE_GASOLINE,
+        MODE_WATER, MODE_FILL,
+    ]
+
+    def handle_scroll(self, direction):
+        """Cycle through tool modes. direction: +1 = next, -1 = previous."""
+        try:
+            idx = self._SCROLL_MODES.index(self._mode)
+        except ValueError:
+            idx = 0
+        idx = (idx + direction) % len(self._SCROLL_MODES)
+        self._mode = self._SCROLL_MODES[idx]
+        # Update fill material for material modes
+        if self._mode not in (self.MODE_ERASE, self.MODE_GNOME, self.MODE_HAND, self.MODE_FILL):
+            self._fill_material = self._mode
+        self._update_button_states()
+
     def draw(self, surface, gui_scale):
         now = time.time()
         dt = now - self._last_tick if self._last_tick else 0.016
@@ -1103,7 +1123,8 @@ class SandWindow:
         # Draw gnomes as stick figures (2× size)
         for gnome in self._gnomes:
             sx = int(gnome.gx * _CELL + _CELL // 2)
-            sy = int(gnome.gy * _CELL + _CELL // 2)
+            # Offset sy so feet (sy+24) land on the top of the cell below
+            sy = int(gnome.gy * _CELL + _CELL) - 24
             c = gnome.color
             # If on fire, flicker between orange/red
             if gnome.on_fire:

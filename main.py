@@ -304,6 +304,8 @@ class App:
                 if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                     self._shutdown()
                     return
+                if event.type == pygame.MOUSEWHEEL and self._sand.visible:
+                    self._sand.handle_scroll(-event.y)  # scroll up = prev, down = next
             hand = self.tracker.latest()
             if hand is not None:
                 self._last_hand = hand
