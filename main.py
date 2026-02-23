@@ -336,9 +336,12 @@ class App:
                                                my - self._mouse_down_pos[1])
                             if total <= 15:
                                 if self._sand.visible:
-                                    # Double-click only = line tool (no single-click action)
+                                    # Double-click = line tool
                                     if now - self._mouse_last_click_time < 0.4:
                                         self._sand.handle_double_click(mx, my)
+                                    else:
+                                        # Single click = select button or paint
+                                        self._sand.handle_tap(mx, my)
                                 self._mouse_last_click_time = now
                         if self._sand.visible:
                             self._sand.handle_pinch_end()
