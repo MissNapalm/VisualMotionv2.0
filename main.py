@@ -310,6 +310,12 @@ class App:
                 if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                     self._shutdown()
                     return
+                if event.type == pygame.KEYDOWN and event.key == pygame.K_s:
+                    if not self._sand.visible:
+                        self._sand.open()
+                        if self._snd_doublepinch:
+                            self._snd_doublepinch.play()
+                        print("Opened Sand (hotkey)")
                 if event.type == pygame.MOUSEWHEEL and self._sand.visible:
                     self._sand.handle_scroll(-event.y)  # scroll up = prev, down = next
                 # --- Mouse input (alternative to hand gestures) ---
