@@ -374,7 +374,7 @@ class App:
             if hand is not None:
                 self._last_hand = hand
                 self._hand_lost_time = 0
-                # Compute smoothed finger positions for visual rendering (dots)
+                # Cursor dots use averaged landmarks (smooth) + faster alpha filter
                 (tx, ty), (ix, iy) = st.finger_smoother.update(
                     lm_to_screen(hand[4], WINDOW_WIDTH, WINDOW_HEIGHT),
                     lm_to_screen(hand[8], WINDOW_WIDTH, WINDOW_HEIGHT),

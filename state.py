@@ -40,8 +40,8 @@ WINDOW_HEIGHT = 800
 # ==============================
 class FingerSmoother:
     """One-pole exponential smoothing — simple, no jitter."""
-    def __init__(self, alpha=0.30):
-        self._a = alpha  # lower = heavier smoothing (0.30 = smooth cursor dots)
+    def __init__(self, alpha=0.45):
+        self._a = alpha  # 0.45 = fast tracking, still filters jitter
         self._tx = None
         self._ty = None
         self._ix = None
