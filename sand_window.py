@@ -709,89 +709,85 @@ class _Bomb:
 
 
 def _explode_bomb(state, bx, by, gnomes, gibs, is_fire=False):
-    """TNT-style explosion: big blast that destroys everything in inner radius
-    and pushes ALL particles outward in the outer ring.
+    """Force-field explosion: pushes ALL particles outward in a circle.
+    Inner core gets fire/napalm, everything else is shoved radially.
     is_fire: if True, spray napalm instead of fire+clearing."""
     g = state.grid
     c = state.colors
     h, w = g.shape
     cx, cy = int(bx), int(by)
     radius = _BOMB_RADIUS
-    force_radius = radius + 15  # shockwave extends well beyond the blast
+    push_radius = radius + 20  # force field reaches well beyond visual blast
 
-    # Phase 1: Destroy/convert everything inside blast radius
-    for dy in range(-radius, radius + 1):
-        for dx in range(-radius, radius + 1):
-            dist = math.hypot(dx, dy)
-            if dist > radius:
-                continue
-            nx, ny = cx + dx, cy + dy
-            if 0 <= nx < w and 0 <= ny < h:
-                cell = g[ny, nx]
-                if is_fire:
-                    # Firebomb: fill with napalm instead
-                    if cell == CONCRETE:
-                        if dist < radius * 0.25:
-                            g[ny, nx] = NAPALM
-                            c[ny, nx] = random.choice(_NAPALM_COLORS)
-                    elif cell != EMPTY or dist < radius * 0.5:
-                        g[ny, nx] = NAPALM
-                        c[ny, nx] = random.choice(_NAPALM_COLORS)
-                else:
-                    # Regular bomb: destroy + fire
-                    if cell == CONCRETE:
-                        if dist < radius * 0.35:
-                            g[ny, nx] = EMPTY
-                            c[ny, nx] = (0, 0, 0)
-                    elif cell != EMPTY:
-                        if dist < radius * 0.5:
-                            g[ny, nx] = FIRE
-                            c[ny, nx] = random.choice(_FIRE_COLORS)
-                        else:
-                            g[ny, nx] = EMPTY
-                            c[ny, nx] = (0, 0, 0)
-                    elif cell == EMPTY and dist < radius * 0.35:
-                        g[ny, nx] = FIRE
-                        c[ny, nx] = random.choice(_FIRE_COLORS)
-                # Chain-react gunpowder
-                if cell == GUNPOWDER:
-                    _ignite_gunpowder(state, nx, ny)
-
-    # Phase 2: Shockwave — push ALL particles outward from the blast edge
-    # Process from outside-in so we don't overwrite already-pushed particles
+    # Collect every non-empty particle inside the push radius
     push_list = []
-    for dy in range(-force_radius, force_radius + 1):
-        for dx in range(-force_radius, force_radius + 1):
+    for dy in range(-push_radius, push_radius + 1):
+        for dx in range(-push_radius, push_radius + 1):
             dist = math.hypot(dx, dy)
-            if dist < radius * 0.6 or dist > force_radius:
+            if dist > push_radius or dist < 0.5:
                 continue
             nx, ny = cx + dx, cy + dy
             if 0 <= nx < w and 0 <= ny < h:
                 cell = g[ny, nx]
                 if cell == EMPTY:
                     continue
+                # Chain-react gunpowder
+                if cell == GUNPOWDER:
+                    _ignite_gunpowder(state, nx, ny)
                 push_list.append((dist, dx, dy, nx, ny))
-    # Sort by distance descending — push furthest particles first
+
+    # Sort furthest-first so outer particles move before inner ones land on them
     push_list.sort(key=lambda t: -t[0])
+
     for dist, dx, dy, nx, ny in push_list:
         cell = g[ny, nx]
         if cell == EMPTY:
-            continue  # may have been cleared by earlier push
-        # Calculate push direction (away from center)
+            continue  # already moved by an earlier iteration
         angle = math.atan2(dy, dx)
-        # Push strength — uniform for all materials
-        frac = 1.0 - (dist - radius * 0.6) / (force_radius - radius * 0.6)
-        strength = max(1, int(5 * frac))
-        # Move particle outward — try each distance until we find an empty cell
+        # Push strength: strongest at center, fading outward
+        frac = 1.0 - dist / push_radius
+        if dist < radius * 0.3:
+            strength = int(push_radius * 0.9)   # core: fling far
+        elif dist < radius:
+            strength = max(3, int(push_radius * 0.7 * frac))
+        else:
+            strength = max(1, int(6 * frac))     # outer ring: gentle shove
+
+        # Pick up the particle
+        saved_cell = cell
+        saved_color = tuple(c[ny, nx])
+        g[ny, nx] = EMPTY
+        c[ny, nx] = (0, 0, 0)
+
+        # Walk outward along the angle, find the furthest empty cell
+        placed = False
         for step in range(strength, 0, -1):
             tx = nx + int(math.cos(angle) * step)
             ty = ny + int(math.sin(angle) * step)
             if 0 <= tx < w and 0 <= ty < h and g[ty, tx] == EMPTY:
-                g[ty, tx] = cell
-                c[ty, tx] = c[ny, nx].copy()
-                g[ny, nx] = EMPTY
-                c[ny, nx] = (0, 0, 0)
+                g[ty, tx] = saved_cell
+                c[ty, tx] = saved_color
+                placed = True
                 break
+        if not placed:
+            # Couldn't push — put it back
+            g[ny, nx] = saved_cell
+            c[ny, nx] = saved_color
+
+    # Small fire core at the very center
+    fire_r = max(3, radius // 4)
+    for dy in range(-fire_r, fire_r + 1):
+        for dx in range(-fire_r, fire_r + 1):
+            if math.hypot(dx, dy) > fire_r:
+                continue
+            nx, ny = cx + dx, cy + dy
+            if 0 <= nx < w and 0 <= ny < h and g[ny, nx] == EMPTY:
+                if is_fire:
+                    g[ny, nx] = NAPALM
+                    c[ny, nx] = random.choice(_NAPALM_COLORS)
+                else:
+                    g[ny, nx] = FIRE
+                    c[ny, nx] = random.choice(_FIRE_COLORS)
 
     # Kill gnomes in blast radius
     for gnome in gnomes:
