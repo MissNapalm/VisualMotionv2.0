@@ -79,7 +79,12 @@ def draw_cards(surface, center_x, center_y, card_offset, category_idx,
 # ==============================
 # Zoom wheel overlay
 # ==============================
+_wheel_buf = None   # cached wheel glow surface
+_wheel_buf_size = 0
+
+
 def draw_wheel(surface, state, window_width, window_height):
+    global _wheel_buf, _wheel_buf_size
     if not state.wheel_active:
         return
     s = state.gui_scale
@@ -87,12 +92,16 @@ def draw_wheel(surface, state, window_width, window_height):
     r = int(state.wheel_radius * s)
     white = (255, 255, 255)
     margin = r + int(80 * s)
-    buf = pygame.Surface((margin * 2, margin * 2), pygame.SRCALPHA)
+    buf_size = margin * 2
+    if _wheel_buf is None or _wheel_buf_size != buf_size:
+        _wheel_buf = pygame.Surface((buf_size, buf_size), pygame.SRCALPHA)
+        _wheel_buf_size = buf_size
+    _wheel_buf.fill((0, 0, 0, 0))
     m = margin
     for i in range(5):
         rr = r + int(15 * s) + i * int(10 * s)
-        pygame.draw.circle(buf, (*white, 100 - i * 20), (m, m), rr, max(1, int(2 * s)))
-    surface.blit(buf, (cx - margin, cy - margin))
+        pygame.draw.circle(_wheel_buf, (*white, 100 - i * 20), (m, m), rr, max(1, int(2 * s)))
+    surface.blit(_wheel_buf, (cx - margin, cy - margin))
     pygame.draw.circle(surface, white, (cx, cy), r, max(1, int(4 * s)))
     pygame.draw.circle(surface, white, (cx, cy), r - int(20 * s), max(1, int(2 * s)))
     segs = 48
@@ -217,12 +226,18 @@ _CAM_THUMB_H = 150
 _CAM_THUMB_MARGIN = 12
 
 
+_cam_thumb_surf = None   # cached surface for camera thumbnail
+
+
 def draw_camera_thumbnail(surface, frame, window_width, landmarks=None):
     """Privacy mode: black panel with white wireframe skeleton, no camera feed."""
+    global _cam_thumb_surf
     x = window_width - _CAM_THUMB_W - _CAM_THUMB_MARGIN
     y = _CAM_THUMB_MARGIN
 
-    thumb_surface = pygame.Surface((_CAM_THUMB_W, _CAM_THUMB_H))
+    if _cam_thumb_surf is None:
+        _cam_thumb_surf = pygame.Surface((_CAM_THUMB_W, _CAM_THUMB_H))
+    thumb_surface = _cam_thumb_surf
     thumb_surface.fill((10, 10, 18))
 
     if landmarks:

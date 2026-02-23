@@ -600,12 +600,13 @@ class _Button:
         self.active = False
         self.font_size = font_size
         self.swatch_color = None
+        self._font = pygame.font.Font(None, font_size)
 
     def draw(self, surface, font=None):
         c = self.active_color if self.active else self.color
         pygame.draw.rect(surface, c, self.rect, border_radius=12)
         pygame.draw.rect(surface, (100, 100, 120), self.rect, 2, border_radius=12)
-        f = font or pygame.font.Font(None, self.font_size)
+        f = font or self._font
         tc = _WHITE if not self.active else _BLACK
         txt = f.render(self.label, True, tc)
         tr = txt.get_rect(center=self.rect.center)
@@ -652,7 +653,7 @@ class SandWindow:
         self._wind_active = False
         self._wind_dir = 1
         self._reverse_gravity = False
-        self._sim_accum = 0.0
+        self._sim_tick = 0
         self._last_tick = 0.0
         self._last_wall_gx = None
         self._last_wall_gy = None
@@ -660,7 +661,12 @@ class SandWindow:
         self._gnome_spawned_this_pinch = False
         self._fill_done_this_pinch = False
         self._held_gnome = None
-        self._pixel_surf = pygame.Surface((self._gw, self._gh), pygame.SRCALPHA)
+        self._pixel_surf = pygame.Surface((self._gw, self._gh))
+        self._scaled_surf = pygame.Surface((window_width, window_height))
+        self._rgb_buf = np.zeros((self._gh, self._gw, 3), dtype=np.uint8)
+        self._font_small = pygame.font.Font(None, 24)
+        self._font_title = pygame.font.Font(None, 36)
+        self._sim_tick = 0               # frame counter for sim stepping
         self._buttons = []
         self._build_buttons()
 
@@ -725,7 +731,7 @@ class SandWindow:
         self._wind_active = False
         self._wind_dir = 1
         self._reverse_gravity = False
-        self._sim_accum = 0.0
+        self._sim_tick = 0
         self._last_tick = time.time()
         self._last_wall_gx = None
         self._last_wall_gy = None
@@ -1108,34 +1114,29 @@ class SandWindow:
         dt = now - self._last_tick if self._last_tick else 0.016
         self._last_tick = now
 
-        self._sim_accum += dt
-        step_dt = 1.0 / _FPS_SIM
-        steps = 0
-        while self._sim_accum >= step_dt and steps < 5:
+        # Fixed 1 sim step per frame — no accumulator, no catch-up, no jitter.
+        # Main loop runs at 60fps; we step the sim every other frame to hit ~30fps sim rate.
+        self._sim_tick += 1
+        if self._sim_tick % 2 == 0:
             _step(self._state, self._wind_active, self._wind_dir, self._reverse_gravity)
             _step_fire(self._state)
             _step_napalm(self._state)
-            # Step all gnomes
             for gnome in self._gnomes:
                 gnome.step(self._state.grid)
             self._gnomes = [g for g in self._gnomes if g.alive]
-            self._sim_accum -= step_dt
-            steps += 1
 
         surface.fill(_BLACK)
 
-        # Fast pixel rendering — build a surface from the color array directly
+        # Fast pixel rendering — reuse buffer to avoid per-frame allocation
         st = self._state
-        # Create an RGB array at grid resolution, then scale up
-        rgb = st.colors.copy()
-        # Black out empty cells
-        empty_mask = (st.grid == EMPTY)
-        rgb[empty_mask] = 0
+        # Copy colors into pre-allocated buffer, zero out empty cells in-place
+        np.copyto(self._rgb_buf, st.colors)
+        self._rgb_buf[st.grid == EMPTY] = 0
 
-        # Transpose to (width, height, 3) for pygame surfarray
-        surf_small = pygame.surfarray.make_surface(rgb.transpose(1, 0, 2))
-        scaled = pygame.transform.scale(surf_small, (self._ww, self._wh))
-        surface.blit(scaled, (0, 0))
+        # Blit into pre-allocated small surface, then scale into pre-allocated large surface
+        pygame.surfarray.blit_array(self._pixel_surf, self._rgb_buf.transpose(1, 0, 2))
+        pygame.transform.scale(self._pixel_surf, (self._ww, self._wh), self._scaled_surf)
+        surface.blit(self._scaled_surf, (0, 0))
 
         # Draw gnomes as stick figures
         for gnome in self._gnomes:
@@ -1205,20 +1206,18 @@ class SandWindow:
                     pygame.draw.circle(surface, random.choice(_FIRE_COLORS), (fx, fy), random.randint(2, 4))
 
         # Draw buttons
-        self._update_button_states()
         for btn in self._buttons:
             btn.draw(surface)
 
-        # Particle count
-        small = pygame.font.Font(None, 24)
+        # Particle count (cached font)
         count = st.count()
         n_gnomes = len(self._gnomes)
         info = f"{count} particles"
         if n_gnomes:
             info += f"  |  {n_gnomes} gnomes"
-        ct = small.render(info, True, (70, 70, 70))
+        ct = self._font_small.render(info, True, (70, 70, 70))
         surface.blit(ct, (self._ww - 140, 16))
 
-        # Title
-        title = pygame.font.Font(None, 36).render("DESERT SANDS", True, (255, 200, 100))
+        # Title (cached font)
+        title = self._font_title.render("DESERT SANDS", True, (255, 200, 100))
         surface.blit(title, (self._ww // 2 - 80, 16))

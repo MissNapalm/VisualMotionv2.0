@@ -40,8 +40,8 @@ WINDOW_HEIGHT = 800
 # ==============================
 class FingerSmoother:
     """One-pole exponential smoothing — simple, no jitter."""
-    def __init__(self, alpha=0.45):
-        self._a = alpha  # lower = heavier smoothing (0.45 = snappy but still smooth)
+    def __init__(self, alpha=0.30):
+        self._a = alpha  # lower = heavier smoothing (0.30 = smooth cursor dots)
         self._tx = None
         self._ty = None
         self._ix = None
@@ -68,7 +68,7 @@ class FingerSmoother:
 
 class PinchSmoother:
     """Smooths pinch coordinates for scroll/interaction."""
-    def __init__(self, alpha=0.35):
+    def __init__(self, alpha=0.30):
         self._a = alpha
         self._x = None
         self._y = None
@@ -96,7 +96,7 @@ class HandState:
         self.category_offset = 0.0
         self.smooth_card_offset = 0.0
         self.smooth_category_offset = 0.0
-        self.scroll_smoothing = 0.18        # smooth fluid catch-up
+        self.scroll_smoothing = 0.12        # smooth fluid catch-up (lower = silkier)
         self.scroll_gain = 4.0              # balanced sensitivity
 
         # pinch state

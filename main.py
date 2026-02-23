@@ -10,7 +10,7 @@ import pygame
 from hand_tracker import HandTracker
 from gestures import (
     is_pinching, pinch_position, is_three_finger,
-    hand_center, finger_angle, lm_to_screen,
+    hand_center, finger_angle, lm_to_screen, pinch_distance,
 )
 from state import (
     HandState, CARD_COUNT, CARD_WIDTH, CARD_HEIGHT, CARD_SPACING,
@@ -30,6 +30,7 @@ class App:
         self.screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
         pygame.display.set_caption("Gesture Carousel")
         self.clock = pygame.time.Clock()
+        self._last_frame_time = time.time()
         pygame.mixer.init()
         try:
             self._snd_select = pygame.mixer.Sound("select.mp3")
@@ -246,6 +247,13 @@ class App:
         screen = self.screen
         screen.fill((20, 20, 30))
 
+        # Delta-time for frame-rate independent smoothing
+        now = time.time()
+        dt = min(now - self._last_frame_time, 0.05)  # cap at 50ms to avoid jumps
+        self._last_frame_time = now
+        # Convert fixed alpha to dt-based: sm = 1 - (1 - base_alpha)^(dt * 60)
+        sm = 1.0 - (1.0 - st.scroll_smoothing) ** (dt * 60.0)
+
         all_rects = []
         if self._sand.visible:
             self._sand.draw(screen, st.gui_scale)
@@ -254,7 +262,6 @@ class App:
         elif self._weather.visible:
             self._weather.draw(screen, st.gui_scale)
         else:
-            sm = st.scroll_smoothing
             st.smooth_card_offset += (st.card_offset - st.smooth_card_offset) * sm
             st.smooth_category_offset += (st.category_offset - st.smooth_category_offset) * sm
             cx, cy = WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2
@@ -318,7 +325,6 @@ class App:
                 # Pinch detection uses RAW (unaveraged) landmarks — zero lag
                 # Hysteresis: easy to start (0.08), sticky to hold (release at 0.12)
                 raw = self.tracker.latest_raw() or hand
-                from gestures import pinch_distance
                 pdist = pinch_distance(raw)
                 if st.pinch_prev:
                     pinch_now = pdist < st.pinch_release   # stay pinched until far apart

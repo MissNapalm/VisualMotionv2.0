@@ -53,7 +53,7 @@ class HandTracker:
         self._landmarks = None
         self._frame = None
         self._history = []            # last N landmark sets for averaging
-        self._avg_window = 2          # frames to average (lower = less lag)
+        self._avg_window = 4          # frames to average (4 = very smooth, minimal lag at 60Hz camera)
         self._raw_landmarks = None    # unaveraged for instant pinch detection
         self._running = False
         self._thread = None
@@ -120,4 +120,4 @@ class HandTracker:
                 self._landmarks = landmarks
                 self._raw_landmarks = raw_lm
                 self._frame = rgb
-            time.sleep(0.001)
+            time.sleep(0.016)  # ~60Hz capture — matches display, avoids CPU spin
