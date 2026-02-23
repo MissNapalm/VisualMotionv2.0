@@ -85,16 +85,17 @@ class _Gnome:
     def _can_walk(self, ix, iy, direction, grid):
         """Check if we can walk one step in the given direction.
         Returns (new_gx, new_gy) or None."""
+        _passable = (EMPTY, FIRE, NAPALM, WATER)
         h, w = grid.shape
         next_x = ix + direction
         if next_x < 0 or next_x >= w:
             return None  # edge of world
-        if grid[iy, next_x] == EMPTY or grid[iy, next_x] in (FIRE, NAPALM):
+        if grid[iy, next_x] in _passable:
             return (float(next_x), float(iy))
         else:
             # Blocked — try climbing 1 cell
             climb_y = iy - 1
-            if climb_y >= 0 and (grid[climb_y, next_x] == EMPTY or grid[climb_y, next_x] in (FIRE, NAPALM)):
+            if climb_y >= 0 and grid[climb_y, next_x] in _passable:
                 return (float(next_x), float(climb_y))
             else:
                 return None  # can't climb
@@ -125,16 +126,22 @@ class _Gnome:
             self.alive = False
             return
 
-        # Walk speed: every 3 ticks normally, every 1 tick on fire
-        walk_interval = 2 if self.on_fire else 3
+        # Walk speed: every 3 ticks normally, every 2 on fire, every 6 in water (50% speed)
+        in_water = (0 <= ix < w and 0 <= iy < h and grid[iy, ix] == WATER)
+        if self.on_fire:
+            walk_interval = 2
+        elif in_water:
+            walk_interval = 6
+        else:
+            walk_interval = 3
 
         # --- gravity ---
         below_y = iy + 1
         on_ground = False
         if below_y >= h:
             on_ground = True          # bottom of screen
-        elif grid[below_y, ix] != EMPTY and grid[below_y, ix] not in (FIRE, NAPALM):
-            on_ground = True          # standing on wall or sand
+        elif grid[below_y, ix] != EMPTY and grid[below_y, ix] not in (FIRE, NAPALM, WATER):
+            on_ground = True          # standing on wall or sand (water is passable)
 
         if on_ground:
             self.vy = 0.0
@@ -198,7 +205,8 @@ class _Gnome:
             # Check each cell we'd pass through
             target_y = int(new_y)
             for check_y in range(iy + 1, min(target_y + 1, h)):
-                if grid[check_y, ix] != EMPTY and grid[check_y, ix] not in (FIRE, NAPALM):
+                cell = grid[check_y, ix]
+                if cell != EMPTY and cell not in (FIRE, NAPALM):
                     # Land on top of this cell
                     self.gy = float(check_y - 1)
                     self.vy = 0.0
@@ -1129,6 +1137,7 @@ class SandWindow:
             # If on fire, flicker between orange/red
             if gnome.on_fire:
                 c = random.choice([(255, 80, 0), (255, 0, 0), (255, 180, 0)])
+
             # Head
             pygame.draw.circle(surface, c, (sx, sy - 16), 8)
             # Hat — pointy gnome hat
