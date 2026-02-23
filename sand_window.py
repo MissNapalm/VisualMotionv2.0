@@ -9,7 +9,7 @@ import pygame
 import numpy as np
 
 _CELL = 5
-_FPS_SIM = 55
+_FPS_SIM = 36
 _PERF_CAP = 12000     # above this many active particles, process a random subset
 
 _BLACK = (0, 0, 0)
