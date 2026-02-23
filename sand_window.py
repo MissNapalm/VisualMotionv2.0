@@ -199,6 +199,9 @@ class _Gnome:
             if self.parachute_open:
                 # Parachute: slow descent
                 self.vy = min(self.vy + 0.05, 0.5)
+            elif in_water:
+                # Water: half gravity, half terminal velocity
+                self.vy = min(self.vy + 0.2, 1.5)
             else:
                 self.vy = min(self.vy + 0.4, 3.0)   # gravity acceleration, terminal vel
             new_y = self.gy + self.vy
@@ -206,7 +209,7 @@ class _Gnome:
             target_y = int(new_y)
             for check_y in range(iy + 1, min(target_y + 1, h)):
                 cell = grid[check_y, ix]
-                if cell != EMPTY and cell not in (FIRE, NAPALM):
+                if cell != EMPTY and cell not in (FIRE, NAPALM, WATER):
                     # Land on top of this cell
                     self.gy = float(check_y - 1)
                     self.vy = 0.0
