@@ -111,11 +111,17 @@ class _Gnome:
             self.alive = False
             return
 
-        # Check if standing in fire
-        if 0 <= ix < w and 0 <= iy < h and grid[iy, ix] in (FIRE, NAPALM):
-            if not self.on_fire:
-                self.on_fire = True
-                self.fire_start_time = time.time()
+        # Check if standing in or near fire (1-cell radius)
+        if not self.on_fire:
+            for dx in range(-1, 2):
+                for dy in range(-1, 2):
+                    cx, cy = ix + dx, iy + dy
+                    if 0 <= cx < w and 0 <= cy < h and grid[cy, cx] in (FIRE, NAPALM):
+                        self.on_fire = True
+                        self.fire_start_time = time.time()
+                        break
+                if self.on_fire:
+                    break
 
         # Water puts out a burning gnome
         if self.on_fire and 0 <= ix < w and 0 <= iy < h and grid[iy, ix] == WATER:
