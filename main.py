@@ -342,8 +342,11 @@ class App:
                             if total <= 15:
                                 if not getattr(self, '_mouse_btn_consumed', False):
                                     self._tap = self._mouse_down_pos
-                                # Double-click detection (disabled in Sand)
-                                if not self._sand.visible:
+                                # Double-click detection (line tool in Sand, close windows otherwise)
+                                if self._sand.visible:
+                                    if now - self._mouse_last_click_time < 0.4:
+                                        self._sand.handle_double_click(mx, my)
+                                else:
                                     if now - self._mouse_last_click_time < 0.4:
                                         self._double_tap = self._mouse_down_pos
                                 self._mouse_last_click_time = now

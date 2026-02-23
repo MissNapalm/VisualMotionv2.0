@@ -548,16 +548,51 @@ class _Bomb:
     def step(self, grid):
         h, w = grid.shape
 
-        # Once landed, bomb stays put — only check fuse
-        if self.landed:
-            if time.time() - self.spawn_time >= _BOMB_FUSE:
-                self.exploded = True
-                self.alive = False
-            return
+        # Check if on ground right now
+        ix_c = int(self.x)
+        iy_c = int(self.y)
+        below = iy_c + 1
+        on_ground = (below >= h or
+                     (0 <= ix_c < w and 0 <= below < h and grid[below, ix_c] != EMPTY))
 
-        # Airborne: apply gravity
+        if self.landed:
+            # Check if we should start rolling (slope beneath us)
+            if on_ground and 0 <= ix_c < w and below < h:
+                left_empty = (ix_c - 1 >= 0
+                              and grid[below, ix_c - 1] == EMPTY
+                              and (iy_c < 0 or iy_c >= h or grid[iy_c, ix_c - 1] == EMPTY))
+                right_empty = (ix_c + 1 < w
+                               and grid[below, ix_c + 1] == EMPTY
+                               and (iy_c < 0 or iy_c >= h or grid[iy_c, ix_c + 1] == EMPTY))
+                if left_empty or right_empty:
+                    # Slope detected — un-land and start rolling
+                    self.landed = False
+                    if left_empty and not right_empty:
+                        self.vx = -0.5
+                    elif right_empty and not left_empty:
+                        self.vx = 0.5
+                    else:
+                        self.vx = random.choice([-0.5, 0.5])
+                    self.vy = 0.3
+            elif not on_ground:
+                # Ground disappeared (e.g., exploded away) — un-land
+                self.landed = False
+                self.vy = 0.0
+
+            if self.landed:
+                # Still landed — just check fuse
+                if time.time() - self.spawn_time >= _BOMB_FUSE:
+                    self.exploded = True
+                    self.alive = False
+                return
+
+        # Airborne / rolling: apply gravity
         self.vy += 0.55
-        self.vx *= 0.99  # air resistance
+
+        if on_ground:
+            self.vx *= 0.80  # ground friction
+        else:
+            self.vx *= 0.99  # air resistance
 
         # Clamp velocity — high enough for fast falls, scan row-by-row
         max_vy = 4.0
@@ -744,10 +779,10 @@ def _explode_bomb(state, bx, by, gnomes, gibs, is_fire=False):
             continue  # may have been cleared by earlier push
         # Calculate push direction (away from center)
         angle = math.atan2(dy, dx)
-        # Push strength — much shorter so we see particles flying
+        # Push strength — uniform for all materials
         frac = 1.0 - (dist - radius * 0.6) / (force_radius - radius * 0.6)
-        strength = max(1, int(4 * frac))
-        # Move particle outward
+        strength = max(1, int(5 * frac))
+        # Move particle outward — try each distance until we find an empty cell
         for step in range(strength, 0, -1):
             tx = nx + int(math.cos(angle) * step)
             ty = ny + int(math.sin(angle) * step)
@@ -1272,6 +1307,8 @@ class SandWindow:
         self._gnome_spawned_this_pinch = False
         self._fill_done_this_pinch = False
         self._held_gnome = None
+        self._line_start_gx = None
+        self._line_start_gy = None
         self._pixel_surf = pygame.Surface((self._gw, self._gh))
         self._scaled_surf = pygame.Surface((window_width, window_height))
         self._rgb_buf = np.zeros((self._gh, self._gw, 3), dtype=np.uint8)
@@ -1375,6 +1412,8 @@ class SandWindow:
         self._gnome_spawned_this_pinch = False
         self._fill_done_this_pinch = False
         self._held_gnome = None
+        self._line_start_gx = None
+        self._line_start_gy = None
         self._update_button_states()
 
     def close(self):
@@ -1385,6 +1424,9 @@ class SandWindow:
         self._color = _FUN_COLORS[self._color_idx]
 
     def _update_button_states(self):
+        # Clear line-start marker when switching modes
+        self._line_start_gx = None
+        self._line_start_gy = None
         self._btn_pour.active = (self._mode == self.MODE_POUR)
         self._btn_hand.active = (self._mode == self.MODE_HAND)
         self._btn_wood.active = (self._mode == self.MODE_WOOD)
@@ -1863,6 +1905,39 @@ class SandWindow:
             self._last_wall_gx = None
             self._last_wall_gy = None
 
+    def handle_double_click(self, px, py):
+        """Double-click line tool: first click sets start, second draws line."""
+        if self._in_ui_zone(px, py):
+            return
+        # Only works for solid painting modes
+        if self._mode not in (self.MODE_WOOD, self.MODE_CONCRETE, self.MODE_ICE):
+            return
+        gx, gy = int(px) // _CELL, int(py) // _CELL
+        if self._line_start_gx is None:
+            # First double-click — store start point
+            self._line_start_gx = gx
+            self._line_start_gy = gy
+        else:
+            # Second double-click — draw line from start to here
+            line_pts = _bresenham(self._line_start_gx, self._line_start_gy, gx, gy)
+            if self._mode == self.MODE_WOOD:
+                for lx, ly in line_pts:
+                    for dx in range(-1, 2):
+                        for dy in range(-1, 2):
+                            self._state.add(WOOD, lx + dx, ly + dy, random.choice(_WOOD_COLORS))
+            elif self._mode == self.MODE_CONCRETE:
+                for lx, ly in line_pts:
+                    for dx in range(-1, 2):
+                        for dy in range(-1, 2):
+                            self._state.add(CONCRETE, lx + dx, ly + dy, _CONCRETE_COLOR)
+            elif self._mode == self.MODE_ICE:
+                for lx, ly in line_pts:
+                    for dx in range(-1, 2):
+                        for dy in range(-1, 2):
+                            self._state.add(ICE, lx + dx, ly + dy, random.choice(_ICE_COLORS))
+            self._line_start_gx = None
+            self._line_start_gy = None
+
     def handle_pinch_end(self):
         self._gnome_spawned_this_pinch = False
         self._fill_done_this_pinch = False
@@ -2090,6 +2165,13 @@ class SandWindow:
         # Draw bombs
         for bomb in self._bombs:
             bomb.draw(surface, self._bomb_font)
+
+        # Draw line-start marker (double-click line tool)
+        if self._line_start_gx is not None and self._line_start_gy is not None:
+            mx = self._line_start_gx * _CELL + _CELL // 2
+            my = self._line_start_gy * _CELL + _CELL // 2
+            pygame.draw.circle(surface, (255, 255, 0), (mx, my), 6, 2)
+            pygame.draw.circle(surface, (255, 255, 0), (mx, my), 2)
 
         # Draw buttons
         for btn in self._buttons:
