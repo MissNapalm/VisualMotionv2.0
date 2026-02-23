@@ -1734,8 +1734,10 @@ class SandWindow:
                     for dy in range(-2, 3):
                         self._state.add(ICE, gx + dx, gy + dy, random.choice(_ICE_COLORS))
             elif self._mode == self.MODE_BOMB:
+                self._state.erase_circle(gx, gy, 3)
                 self._bombs.append(_Bomb(gx, gy))
             elif self._mode == self.MODE_FIREBOMB:
+                self._state.erase_circle(gx, gy, 3)
                 self._bombs.append(_Bomb(gx, gy, is_fire=True))
             elif self._mode == self.MODE_MONEY:
                 for _ in range(20):
@@ -1900,6 +1902,7 @@ class SandWindow:
         elif self._mode == self.MODE_BOMB:
             # One bomb per pinch — don't spawn continuously
             if not getattr(self, '_gnome_spawned_this_pinch', False):
+                self._state.erase_circle(gx, gy, 3)
                 self._bombs.append(_Bomb(gx, gy))
                 self._gnome_spawned_this_pinch = True
             self._last_wall_gx = None
@@ -1907,6 +1910,7 @@ class SandWindow:
         elif self._mode == self.MODE_FIREBOMB:
             # One firebomb per pinch
             if not getattr(self, '_gnome_spawned_this_pinch', False):
+                self._state.erase_circle(gx, gy, 3)
                 self._bombs.append(_Bomb(gx, gy, is_fire=True))
                 self._gnome_spawned_this_pinch = True
             self._last_wall_gx = None
