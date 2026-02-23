@@ -237,8 +237,6 @@ class App:
                                 self._snd_doublepinch.play()
                             print("Opened Sand")
                         else:
-                            if self._snd_doublepinch:
-                                self._snd_doublepinch.play()
                             print(f"Double pinch on {name}")
                         break
             self._double_tap = None
