@@ -543,6 +543,7 @@ class _Bomb:
         self.alive = True
         self.exploded = False
         self.is_fire = is_fire  # firebomb variant
+        self.bounced = False     # only one bounce allowed
 
     def step(self, grid):
         h, w = grid.shape
@@ -612,19 +613,23 @@ class _Bomb:
                 iy_to = int(new_y)
                 for check_y in range(max(0, iy_from + 1), min(h, iy_to + 1)):
                     if grid[check_y, ix2] != EMPTY:
-                        new_y = float(check_y - 1)
-                        # Bounce — proportional to impact speed
-                        impact = abs(self.vy)
-                        self.vy = -impact * 0.45
-                        if abs(self.vy) < 0.4:
+                        # Land 2 cells above surface (10px visual offset)
+                        new_y = float(check_y - 3)
+                        if not self.bounced:
+                            # First bounce — half height
+                            self.vy = -abs(self.vy) * 0.3
+                            self.bounced = True
+                        else:
+                            # Already bounced once — settle
                             self.vy = 0.0
                         break
                 else:
                     if iy_to >= h:
-                        new_y = float(h - 1)
-                        impact = abs(self.vy)
-                        self.vy = -impact * 0.45
-                        if abs(self.vy) < 0.4:
+                        new_y = float(h - 3)
+                        if not self.bounced:
+                            self.vy = -abs(self.vy) * 0.3
+                            self.bounced = True
+                        else:
                             self.vy = 0.0
             elif self.vy < 0:
                 check_row = int(new_y)
