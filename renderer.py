@@ -41,69 +41,54 @@ def clamp(v, lo, hi):
 # Pre-computed brightened app colors
 _app_color_cache: dict[str, tuple] = {}
 
-# Cached pre-rendered card surfaces: (app_name, qw, qh, is_selected) -> Surface
+# Card surface cache: (app_name, w, h, is_selected) -> Surface
+# Rendered at exact target size for crisp text — no scaling artifacts.
 _card_surface_cache: dict[tuple, pygame.Surface] = {}
-_CARD_CACHE_MAX = 120          # evict old entries when cache grows too large
+_CARD_CACHE_MAX = 60
 
 
-def _quantize(v, step=4):
-    """Snap to nearest multiple of step — avoids creating a new surface per pixel."""
-    return max(step, (v + step // 2) // step * step)
-
-
-def _get_card_surface(app_name, w, h, br, gui_scale, is_selected):
-    """Return a pre-rendered card surface (SRCALPHA, cached, quantized).
-
-    Dimensions are quantized to 4px steps so the cache isn't rebuilt
-    on every tiny gui_scale change during zoom-wheel rotation.
-    """
-    qw, qh = _quantize(w), _quantize(h)
-    key = (app_name, qw, qh, is_selected)
+def _get_card_surface(app_name, w, h, gui_scale, is_selected):
+    """Render a card at the exact requested size (crisp text, no scaling)."""
+    key = (app_name, w, h, is_selected)
     if key in _card_surface_cache:
         return _card_surface_cache[key]
 
     # Evict oldest entries if cache is full
     if len(_card_surface_cache) >= _CARD_CACHE_MAX:
-        for old_key in list(_card_surface_cache.keys())[:40]:
+        for old_key in list(_card_surface_cache.keys())[:20]:
             del _card_surface_cache[old_key]
 
-    # Selection outline adds padding
+    br = max(12, int(50 * gui_scale))
     pad = int(6 * gui_scale) + max(2, int(8 * gui_scale)) if is_selected else 0
-    sw, sh = qw + pad * 2, qh + pad * 2
+    sw, sh = w + pad * 2, h + pad * 2
 
     surf = pygame.Surface((sw, sh), pygame.SRCALPHA)
-
     cx, cy = sw // 2, sh // 2
 
-    # Color
     if app_name not in _app_color_cache:
         base_color = APP_COLORS.get(app_name, (100, 100, 100))
         _app_color_cache[app_name] = tuple(min(255, int(base_color[i] * 1.2)) for i in range(3))
     color = _app_color_cache[app_name]
 
-    # Main rounded rect
-    card_rect = pygame.Rect(cx - qw // 2, cy - qh // 2, qw, qh)
+    card_rect = pygame.Rect(cx - w // 2, cy - h // 2, w, h)
     pygame.draw.rect(surf, color, card_rect, border_radius=br)
 
-    # Selection border
     if is_selected:
         sel = pygame.Rect(card_rect.x - int(6 * gui_scale), card_rect.y - int(6 * gui_scale),
                           card_rect.width + int(12 * gui_scale), card_rect.height + int(12 * gui_scale))
         pygame.draw.rect(surf, (255, 255, 255), sel,
                          width=max(2, int(8 * gui_scale)), border_radius=br)
 
-    # Icon letter
     icon_size = max(24, int(120 * gui_scale))
     icon_img = _render_text(app_name[0], icon_size, (255, 255, 255))
     surf.blit(icon_img, icon_img.get_rect(center=(cx, cy - int(20 * gui_scale))))
 
-    # Name text
     text_size = max(12, int(36 * gui_scale))
     text_img = _render_text(app_name, text_size, (255, 255, 255))
     surf.blit(text_img, text_img.get_rect(center=(cx, cy + int(60 * gui_scale))))
 
-    _card_surface_cache[key] = surf.convert_alpha()
-    return _card_surface_cache[key]
+    _card_surface_cache[key] = surf
+    return surf
 
 
 def draw_app_icon(surface, app_name, x, y, base_w, base_h,
@@ -113,9 +98,8 @@ def draw_app_icon(surface, app_name, x, y, base_w, base_h,
     if is_selected:
         w = int(w * zoom_scale)
         h = int(h * zoom_scale)
-    br = max(12, int(50 * gui_scale))
 
-    card_surf = _get_card_surface(app_name, w, h, br, gui_scale, is_selected)
+    card_surf = _get_card_surface(app_name, w, h, gui_scale, is_selected)
     cw, ch = card_surf.get_size()
     surface.blit(card_surf, (x - cw // 2, y - ch // 2))
 
@@ -150,49 +134,25 @@ def draw_cards(surface, center_x, center_y, card_offset, category_idx,
 # ==============================
 # Zoom wheel overlay
 # ==============================
-_wheel_buf = None   # cached wheel glow surface
-_wheel_buf_size = 0
 
 
 def draw_wheel(surface, state, window_width, window_height):
-    global _wheel_buf, _wheel_buf_size
     if not state.wheel_active:
         return
     s = state.gui_scale
     cx, cy = state.wheel_center_x, state.wheel_center_y
     r = int(state.wheel_radius * s)
     white = (255, 255, 255)
-    margin = r + int(80 * s)
-    buf_size = margin * 2
-    if _wheel_buf is None or _wheel_buf_size != buf_size:
-        _wheel_buf = pygame.Surface((buf_size, buf_size), pygame.SRCALPHA)
-        _wheel_buf_size = buf_size
-    _wheel_buf.fill((0, 0, 0, 0))
-    m = margin
-    for i in range(5):
-        rr = r + int(15 * s) + i * int(10 * s)
-        pygame.draw.circle(_wheel_buf, (*white, 100 - i * 20), (m, m), rr, max(1, int(2 * s)))
-    surface.blit(_wheel_buf, (cx - margin, cy - margin))
+    # Simple wheel — two circles + pointer + label (no glow, no arc segments)
     pygame.draw.circle(surface, white, (cx, cy), r, max(1, int(4 * s)))
     pygame.draw.circle(surface, white, (cx, cy), r - int(20 * s), max(1, int(2 * s)))
-    segs = 48
-    prog = int((state.wheel_angle / (2 * math.pi)) * segs) % segs
-    ir = r - int(10 * s)
-    for i in range(prog):
-        sa = math.radians(i * 360 / segs) - math.pi / 2
-        ea = math.radians((i + 1) * 360 / segs) - math.pi / 2
-        pygame.draw.line(surface, white,
-                         (cx + int(ir * math.cos(sa)), cy + int(ir * math.sin(sa))),
-                         (cx + int(ir * math.cos(ea)), cy + int(ir * math.sin(ea))),
-                         max(1, int(6 * s)))
     pl = r - int(30 * s)
     px = cx + int(pl * math.cos(state.wheel_angle))
     py = cy + int(pl * math.sin(state.wheel_angle))
     pygame.draw.line(surface, white, (cx, cy), (px, py), max(1, int(3 * s)))
     pygame.draw.circle(surface, white, (px, py), max(2, int(6 * s)))
     pygame.draw.circle(surface, white, (cx, cy), max(2, int(8 * s)))
-    font = get_font(max(18, int(40 * s)))
-    t = font.render(f"GUI {state.gui_scale:.2f}x", True, white)
+    t = _render_text(f"GUI {state.gui_scale:.1f}x", max(18, int(40 * s)), white)
     tr = t.get_rect(center=(cx, cy + r + int(44 * s)))
     bg = pygame.Rect(tr.x - int(10 * s), tr.y - int(5 * s),
                      tr.width + int(20 * s), tr.height + int(10 * s))
