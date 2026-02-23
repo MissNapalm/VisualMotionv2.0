@@ -732,9 +732,10 @@ def _explode_bomb(state, bx, by, gnomes, gibs, is_fire=False):
                 cell = g[ny, nx]
                 if cell == EMPTY:
                     continue
-                # Chain-react gunpowder
+                # Chain-react gunpowder — just light it, fuse will burn slowly
                 if cell == GUNPOWDER:
-                    _ignite_gunpowder(state, nx, ny)
+                    g[ny, nx] = FIRE
+                    c[ny, nx] = random.choice(_FIRE_COLORS)
                     continue
                 # Clear the cell
                 g[ny, nx] = EMPTY
@@ -839,8 +840,9 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False):
     c = state.colors
     h, w = g.shape
 
-    # Find all falling particles: sand, gunpowder, gasoline, water, confetti, poison, holy water, money, dirt
-    falling = (g == HEAVY) | (g == GUNPOWDER) | (g == GASOLINE) | (g == WATER) | (g == CONFETTI) | (g == POISON) | (g == HOLYWATER) | (g == MONEY) | (g == DIRT)
+    # Find all falling particles: sand, gasoline, water, confetti, poison, holy water, money, dirt
+    # (GUNPOWDER is static — painted like a fuse line, does not fall)
+    falling = (g == HEAVY) | (g == GASOLINE) | (g == WATER) | (g == CONFETTI) | (g == POISON) | (g == HOLYWATER) | (g == MONEY) | (g == DIRT)
     if not np.any(falling):
         return
 
@@ -860,7 +862,7 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False):
     for i in range(len(ys)):
         y, x = int(ys[i]), int(xs[i])
         ptype = g[y, x]
-        if ptype not in (HEAVY, GUNPOWDER, GASOLINE, WATER, CONFETTI, POISON, HOLYWATER, MONEY, DIRT):
+        if ptype not in (HEAVY, GASOLINE, WATER, CONFETTI, POISON, HOLYWATER, MONEY, DIRT):
             continue  # already moved by another particle this step
         col = c[y, x].copy()
 
@@ -949,36 +951,6 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False):
                 c[y, wx] = col
 
 
-def _ignite_gunpowder(state, start_x, start_y):
-    """BFS chain-reaction: instantly convert ALL connected gunpowder to FIRE."""
-    from collections import deque
-    g = state.grid
-    c = state.colors
-    h, w = g.shape
-    queue = deque()
-    queue.append((start_x, start_y))
-    visited = set()
-    visited.add((start_x, start_y))
-    while queue:
-        cx, cy = queue.popleft()
-        g[cy, cx] = FIRE
-        c[cy, cx] = random.choice(_FIRE_COLORS)
-        # Also blast neighbors: small chance to destroy adjacent non-gunpowder cells
-        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, -1), (-1, 1), (1, 1)]:
-            nx, ny = cx + dx, cy + dy
-            if 0 <= nx < w and 0 <= ny < h and (nx, ny) not in visited:
-                visited.add((nx, ny))
-                if g[ny, nx] == GUNPOWDER:
-                    queue.append((nx, ny))
-                elif g[ny, nx] == GASOLINE:
-                    # Gasoline ignites instantly from explosion
-                    g[ny, nx] = FIRE
-                    c[ny, nx] = random.choice(_FIRE_COLORS)
-                elif g[ny, nx] in (HEAVY, STATIC, WOOD, DIRT) and random.random() < 0.4:
-                    # Explosion blasts nearby materials
-                    g[ny, nx] = FIRE
-                    c[ny, nx] = random.choice(_FIRE_COLORS)
-
 
 def _step_fire(state):
     """Physics step for fire particles: rise upward, spread, consume."""
@@ -1038,8 +1010,10 @@ def _step_fire(state):
                         g[ny2, nx] = FIRE
                         c[ny2, nx] = random.choice(_FIRE_COLORS)
                 elif cell == GUNPOWDER:
-                    # Chain-reaction: BFS ignite ALL connected gunpowder instantly
-                    _ignite_gunpowder(state, nx, ny2)
+                    # Fuse: slowly ignite adjacent gunpowder (burns cell by cell)
+                    if random.random() < 0.12:
+                        g[ny2, nx] = FIRE
+                        c[ny2, nx] = random.choice(_FIRE_COLORS)
                 elif cell == GASOLINE:
                     # Gasoline ignites instantly on contact with fire
                     g[ny2, nx] = FIRE
@@ -1145,7 +1119,10 @@ def _step_napalm(state):
                         g[ny2, nx] = FIRE
                         c[ny2, nx] = random.choice(_FIRE_COLORS)
                 elif cell == GUNPOWDER:
-                    _ignite_gunpowder(state, nx, ny2)
+                    # Fuse: slowly ignite adjacent gunpowder
+                    if random.random() < 0.12:
+                        g[ny2, nx] = FIRE
+                        c[ny2, nx] = random.choice(_FIRE_COLORS)
                 elif cell == GASOLINE:
                     g[ny2, nx] = FIRE
                     c[ny2, nx] = random.choice(_FIRE_COLORS)
@@ -1256,7 +1233,10 @@ def _step_magma(state):
                             g[ny2, nx] = FIRE
                             c[ny2, nx] = random.choice(_FIRE_COLORS)
                     elif cell == GUNPOWDER:
-                        _ignite_gunpowder(state, nx, ny2)
+                        # Fuse: slowly ignite adjacent gunpowder
+                        if random.random() < 0.12:
+                            g[ny2, nx] = FIRE
+                            c[ny2, nx] = random.choice(_FIRE_COLORS)
                     elif cell == GASOLINE:
                         g[ny2, nx] = FIRE
                         c[ny2, nx] = random.choice(_FIRE_COLORS)
@@ -1802,10 +1782,10 @@ class SandWindow:
                     ry = gy + random.randint(-2, 2)
                     self._state.add(FIRE, rx, ry, random.choice(_FIRE_COLORS))
             elif self._mode == self.MODE_GUNPOWDER:
-                for _ in range(25):
-                    rx = gx + random.randint(-5, 5)
-                    ry = gy + random.randint(-5, 2)
-                    self._state.add(GUNPOWDER, rx, ry, random.choice(_GUNPOWDER_COLORS))
+                # Paint gunpowder as a static fuse line (like wood)
+                for dx in range(-1, 2):
+                    for dy in range(-1, 2):
+                        self._state.add(GUNPOWDER, gx + dx, gy + dy, random.choice(_GUNPOWDER_COLORS))
             elif self._mode == self.MODE_NAPALM:
                 for _ in range(15):
                     rx = gx + random.randint(-3, 3)
@@ -1952,12 +1932,21 @@ class SandWindow:
             self._last_wall_gx = None
             self._last_wall_gy = None
         elif self._mode == self.MODE_GUNPOWDER:
-            for _ in range(10):
-                rx = gx + random.randint(-3, 3)
-                ry = gy + random.randint(-2, 1)
-                self._state.add(GUNPOWDER, rx, ry, random.choice(_GUNPOWDER_COLORS))
-            self._last_wall_gx = None
-            self._last_wall_gy = None
+            # Paint gunpowder as a static fuse line (like wood, with interpolation)
+            if (self._last_wall_gx is not None and self._last_wall_gy is not None
+                    and abs(gx - self._last_wall_gx) <= 8
+                    and abs(gy - self._last_wall_gy) <= 8):
+                line_pts = _bresenham(self._last_wall_gx, self._last_wall_gy, gx, gy)
+                for lx, ly in line_pts:
+                    for dx in range(-1, 2):
+                        for dy in range(-1, 2):
+                            self._state.add(GUNPOWDER, lx + dx, ly + dy, random.choice(_GUNPOWDER_COLORS))
+            else:
+                for dx in range(-1, 2):
+                    for dy in range(-1, 2):
+                        self._state.add(GUNPOWDER, gx + dx, gy + dy, random.choice(_GUNPOWDER_COLORS))
+            self._last_wall_gx = gx
+            self._last_wall_gy = gy
         elif self._mode == self.MODE_NAPALM:
             for _ in range(8):
                 rx = gx + random.randint(-2, 2)
@@ -2073,7 +2062,7 @@ class SandWindow:
         if self._in_ui_zone(px, py):
             return
         # Only works for solid painting modes
-        if self._mode not in (self.MODE_WOOD, self.MODE_CONCRETE, self.MODE_ICE):
+        if self._mode not in (self.MODE_WOOD, self.MODE_CONCRETE, self.MODE_ICE, self.MODE_GUNPOWDER):
             return
         gx, gy = int(px) // _CELL, int(py) // _CELL
         if self._line_start_gx is None:
@@ -2098,6 +2087,11 @@ class SandWindow:
                     for dx in range(-1, 2):
                         for dy in range(-1, 2):
                             self._state.add(ICE, lx + dx, ly + dy, random.choice(_ICE_COLORS))
+            elif self._mode == self.MODE_GUNPOWDER:
+                for lx, ly in line_pts:
+                    for dx in range(-1, 2):
+                        for dy in range(-1, 2):
+                            self._state.add(GUNPOWDER, lx + dx, ly + dy, random.choice(_GUNPOWDER_COLORS))
             self._line_start_gx = None
             self._line_start_gy = None
 
