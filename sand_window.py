@@ -951,11 +951,11 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False):
 
         is_fluid = ptype in (GASOLINE, WATER, POISON, HOLYWATER)
 
-        # Fluids ALWAYS try to spread laterally, even after falling.
-        # This prevents water from piling up in pyramids like sand.
-        if is_fluid:
+        # Fluids spread laterally when they can't fall — prevents piling up like sand.
+        # Only spread when sitting (not after falling), and 2-3 cells to stay natural.
+        if not moved and is_fluid:
             direction = 1 if random.random() < 0.5 else -1
-            spread = random.randint(3, 5)
+            spread = random.randint(2, 3)
             for _ in range(spread):
                 lx = x + direction
                 if 0 <= lx < w and g[y, lx] == EMPTY:
