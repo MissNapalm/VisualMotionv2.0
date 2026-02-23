@@ -182,8 +182,10 @@ class App:
                         pass  # don't double-fire
                     else:
                         self._tap = st.pinch_start_pos
-                    if 0.05 < dt < st.double_pinch_window:
-                        self._double_tap = st.pinch_start_pos
+                    # Double-pinch detection (disabled in Sand)
+                    if not self._sand.visible:
+                        if 0.05 < dt < st.double_pinch_window:
+                            self._double_tap = st.pinch_start_pos
                 st.last_pinch_time = now
             st.reset_pinch()
             # Also end sand pinch tracking
@@ -334,9 +336,10 @@ class App:
                             if total <= 15:
                                 if not getattr(self, '_mouse_btn_consumed', False):
                                     self._tap = self._mouse_down_pos
-                                # Double-click detection
-                                if now - self._mouse_last_click_time < 0.4:
-                                    self._double_tap = self._mouse_down_pos
+                                # Double-click detection (disabled in Sand)
+                                if not self._sand.visible:
+                                    if now - self._mouse_last_click_time < 0.4:
+                                        self._double_tap = self._mouse_down_pos
                                 self._mouse_last_click_time = now
                         if self._sand.visible:
                             self._sand.handle_pinch_end()
