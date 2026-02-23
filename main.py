@@ -340,15 +340,16 @@ class App:
                             total = math.hypot(mx - self._mouse_down_pos[0],
                                                my - self._mouse_down_pos[1])
                             if total <= 15:
-                                if not getattr(self, '_mouse_btn_consumed', False):
-                                    self._tap = self._mouse_down_pos
-                                # Double-click detection (line tool in Sand, close windows otherwise)
                                 if self._sand.visible:
+                                    # Double-click = line tool
                                     if now - self._mouse_last_click_time < 0.4:
                                         self._sand.handle_double_click(mx, my)
+                                    elif not getattr(self, '_mouse_btn_consumed', False):
+                                        # Single click on canvas = paint one dab
+                                        self._sand.handle_pinch(mx, my)
                                 else:
-                                    if now - self._mouse_last_click_time < 0.4:
-                                        self._double_tap = self._mouse_down_pos
+                                    if not getattr(self, '_mouse_btn_consumed', False):
+                                        self._tap = self._mouse_down_pos
                                 self._mouse_last_click_time = now
                         if self._sand.visible:
                             self._sand.handle_pinch_end()
