@@ -546,10 +546,8 @@ class _Bomb:
 
     def step(self, grid):
         h, w = grid.shape
-        # Gravity — strong acceleration for realistic fall
-        self.vy += 0.55
 
-        # Friction when on ground
+        # Check if on ground
         on_ground = False
         ix_c = int(self.x)
         iy_c = int(self.y)
@@ -558,6 +556,9 @@ class _Bomb:
             on_ground = True
 
         if on_ground:
+            # On ground: kill downward velocity, apply friction
+            if self.vy > 0:
+                self.vy = 0.0
             self.vx *= 0.80  # ground friction
             # Rolling on slopes — check if surface is tilted
             if 0 <= ix_c < w:
@@ -574,6 +575,8 @@ class _Bomb:
                 elif left_empty and right_empty:
                     self.vx += random.choice([-0.25, 0.25])
         else:
+            # Airborne: apply gravity
+            self.vy += 0.55
             self.vx *= 0.99  # air resistance
 
         # Clamp velocity — high enough for fast falls, scan row-by-row
