@@ -543,41 +543,21 @@ class _Bomb:
         self.alive = True
         self.exploded = False
         self.is_fire = is_fire  # firebomb variant
+        self.landed = False  # True once bomb touches ground — stays put
 
     def step(self, grid):
         h, w = grid.shape
 
-        # Check if on ground
-        on_ground = False
-        ix_c = int(self.x)
-        iy_c = int(self.y)
-        below = iy_c + 1
-        if below >= h or (0 <= ix_c < w and 0 <= below < h and grid[below, ix_c] != EMPTY):
-            on_ground = True
+        # Once landed, bomb stays put — only check fuse
+        if self.landed:
+            if time.time() - self.spawn_time >= _BOMB_FUSE:
+                self.exploded = True
+                self.alive = False
+            return
 
-        if on_ground:
-            # On ground: kill downward velocity, apply friction
-            if self.vy > 0:
-                self.vy = 0.0
-            self.vx *= 0.80  # ground friction
-            # Rolling on slopes — check if surface is tilted
-            if 0 <= ix_c < w:
-                left_empty = (ix_c - 1 >= 0 and below < h and grid[below, ix_c - 1] == EMPTY
-                              and (iy_c < 0 or iy_c >= h or grid[iy_c, ix_c - 1] == EMPTY))
-                right_empty = (ix_c + 1 < w and below < h and grid[below, ix_c + 1] == EMPTY
-                               and (iy_c < 0 or iy_c >= h or grid[iy_c, ix_c + 1] == EMPTY))
-                if left_empty and not right_empty:
-                    self.vx -= 0.35
-                    self.vy += 0.25
-                elif right_empty and not left_empty:
-                    self.vx += 0.35
-                    self.vy += 0.25
-                elif left_empty and right_empty:
-                    self.vx += random.choice([-0.25, 0.25])
-        else:
-            # Airborne: apply gravity
-            self.vy += 0.55
-            self.vx *= 0.99  # air resistance
+        # Airborne: apply gravity
+        self.vy += 0.55
+        self.vx *= 0.99  # air resistance
 
         # Clamp velocity — high enough for fast falls, scan row-by-row
         max_vy = 4.0
@@ -615,17 +595,17 @@ class _Bomb:
                 iy_to = int(new_y)
                 for check_y in range(max(0, iy_from + 1), min(h, iy_to + 1)):
                     if grid[check_y, ix2] != EMPTY:
-                        # Land 2 cells above surface (10px visual offset)
-                        new_y = float(check_y - 3)
-                        # Single small bounce then done
+                        new_y = float(check_y - 1)
                         self.vy = 0.0
-                        self.vx *= 0.3
+                        self.vx = 0.0
+                        self.landed = True
                         break
                 else:
                     if iy_to >= h:
-                        new_y = float(h - 3)
+                        new_y = float(h - 1)
                         self.vy = 0.0
-                        self.vx *= 0.3
+                        self.vx = 0.0
+                        self.landed = True
             elif self.vy < 0:
                 check_row = int(new_y)
                 if check_row < 0:
@@ -638,6 +618,8 @@ class _Bomb:
             if new_y >= h:
                 new_y = float(h - 1)
                 self.vy = 0.0
+                self.vx = 0.0
+                self.landed = True
 
         # Safety: if inside a solid, push up
         fy = int(new_y)
@@ -646,6 +628,8 @@ class _Bomb:
                 fy -= 1
             new_y = float(fy)
             self.vy = 0.0
+            self.vx = 0.0
+            self.landed = True
 
         self.y = new_y
 
