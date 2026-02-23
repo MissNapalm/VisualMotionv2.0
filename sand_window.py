@@ -876,8 +876,8 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False):
     c = state.colors
     h, w = g.shape
 
-    # Find all falling particles: sand, gunpowder, gasoline, water, confetti, poison, holy water, money, dirt, magma
-    falling = (g == HEAVY) | (g == GUNPOWDER) | (g == GASOLINE) | (g == WATER) | (g == CONFETTI) | (g == POISON) | (g == HOLYWATER) | (g == MONEY) | (g == DIRT) | (g == MAGMA)
+    # Find all falling particles: sand, gunpowder, gasoline, water, confetti, poison, holy water, money, dirt
+    falling = (g == HEAVY) | (g == GUNPOWDER) | (g == GASOLINE) | (g == WATER) | (g == CONFETTI) | (g == POISON) | (g == HOLYWATER) | (g == MONEY) | (g == DIRT)
     if not np.any(falling):
         return
 
@@ -897,7 +897,7 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False):
     for i in range(len(ys)):
         y, x = int(ys[i]), int(xs[i])
         ptype = g[y, x]
-        if ptype not in (HEAVY, GUNPOWDER, GASOLINE, WATER, CONFETTI, POISON, HOLYWATER, MONEY, DIRT, MAGMA):
+        if ptype not in (HEAVY, GUNPOWDER, GASOLINE, WATER, CONFETTI, POISON, HOLYWATER, MONEY, DIRT):
             continue  # already moved by another particle this step
         col = c[y, x].copy()
 
@@ -935,25 +935,6 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False):
                 g[y, x] = EMPTY
                 c[y, x] = (0, 0, 0)
                 continue
-            # Magma destroys on contact — ignites whatever it touches
-            if ptype == MAGMA:
-                # Set fire to the cell below (what we hit)
-                if 0 <= ny < h and 0 <= x < w:
-                    cell_below = g[ny, x]
-                    if cell_below == GUNPOWDER:
-                        _ignite_gunpowder(state, x, ny)
-                    elif cell_below == GASOLINE:
-                        g[ny, x] = FIRE
-                        c[ny, x] = random.choice(_FIRE_COLORS)
-                    elif cell_below == ICE:
-                        g[ny, x] = WATER
-                        c[ny, x] = random.choice(_WATER_COLORS)
-                    elif cell_below not in (EMPTY, CONCRETE, WATER, FIRE, NAPALM):
-                        g[ny, x] = FIRE
-                        c[ny, x] = random.choice(_FIRE_COLORS)
-                g[y, x] = EMPTY
-                c[y, x] = (0, 0, 0)
-                continue
             # Try diagonal left/right (random order)
             if random.random() < 0.5:
                 tries = [(x - 1, ny), (x + 1, ny)]
@@ -968,8 +949,25 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False):
                     moved = True
                     break
 
-        # If didn't fall, try lateral slide
-        if not moved:
+        is_fluid = ptype in (GASOLINE, WATER, POISON, HOLYWATER)
+
+        # Fluids ALWAYS try to spread laterally, even after falling.
+        # This prevents water from piling up in pyramids like sand.
+        if is_fluid:
+            direction = 1 if random.random() < 0.5 else -1
+            spread = random.randint(3, 5)
+            for _ in range(spread):
+                lx = x + direction
+                if 0 <= lx < w and g[y, lx] == EMPTY:
+                    g[y, x] = EMPTY
+                    g[y, lx] = ptype
+                    c[y, lx] = col
+                    x = lx
+                    moved = True
+                else:
+                    break
+        elif not moved:
+            # Non-fluid: only try lateral if didn't move at all
             if random.random() < slide_chance:
                 lx = x + (1 if random.random() < 0.5 else -1)
                 if 0 <= lx < w and g[y, lx] == EMPTY:
@@ -1231,6 +1229,117 @@ def _step_napalm(state):
             g[y, x] = EMPTY
 
 
+def _step_magma(state):
+    """Physics step for magma: like napalm but RESISTANT to water.
+    Requires 3+ adjacent water cells to be extinguished."""
+    g = state.grid
+    c = state.colors
+    h, w = g.shape
+
+    mag = (g == MAGMA)
+    if not np.any(mag):
+        return
+
+    ys, xs = np.where(mag)
+    order = np.arange(len(ys))
+    np.random.shuffle(order)
+    ys = ys[order]
+    xs = xs[order]
+
+    ys, xs = _throttle(ys, xs)
+
+    for i in range(len(ys)):
+        y, x = int(ys[i]), int(xs[i])
+        if g[y, x] != MAGMA:
+            continue
+        col = tuple(random.choice(_MAGMA_COLORS))
+
+        # Count adjacent water cells — only extinguish if 3+ water neighbors
+        water_count = 0
+        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, -1), (-1, 1), (1, 1)]:
+            nx, ny2 = x + dx, y + dy
+            if 0 <= nx < w and 0 <= ny2 < h:
+                if g[ny2, nx] == WATER:
+                    water_count += 1
+
+        extinguished = False
+        if water_count >= 3:
+            # Lots of water — extinguish and turn surrounding water to steam (empty)
+            g[y, x] = EMPTY
+            for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, -1), (-1, 1), (1, 1)]:
+                nx, ny2 = x + dx, y + dy
+                if 0 <= nx < w and 0 <= ny2 < h and g[ny2, nx] == WATER:
+                    g[ny2, nx] = EMPTY
+            extinguished = True
+        else:
+            # Spread fire to neighbors (but IGNORE water — magma resists it)
+            for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, -1), (-1, 1), (1, 1)]:
+                nx, ny2 = x + dx, y + dy
+                if 0 <= nx < w and 0 <= ny2 < h:
+                    cell = g[ny2, nx]
+                    if cell == ICE:
+                        g[ny2, nx] = WATER
+                        c[ny2, nx] = random.choice(_WATER_COLORS)
+                    elif cell == WOOD:
+                        if random.random() < 0.018:
+                            g[ny2, nx] = FIRE
+                            c[ny2, nx] = random.choice(_FIRE_COLORS)
+                    elif cell == DIRT:
+                        if random.random() < 0.025:
+                            g[ny2, nx] = FIRE
+                            c[ny2, nx] = random.choice(_FIRE_COLORS)
+                    elif cell == HEAVY or cell == STATIC:
+                        if random.random() < 0.009:
+                            g[ny2, nx] = FIRE
+                            c[ny2, nx] = random.choice(_FIRE_COLORS)
+                    elif cell == GUNPOWDER:
+                        _ignite_gunpowder(state, nx, ny2)
+                    elif cell == GASOLINE:
+                        g[ny2, nx] = FIRE
+                        c[ny2, nx] = random.choice(_FIRE_COLORS)
+
+        if extinguished:
+            continue
+
+        # Magma FALLS downward (like napalm)
+        ny = y + 1
+        moved = False
+
+        if 0 <= ny < h and g[ny, x] == EMPTY:
+            g[y, x] = EMPTY
+            g[ny, x] = MAGMA
+            c[ny, x] = col
+            y = ny
+            moved = True
+        else:
+            if random.random() < 0.5:
+                tries = [(x - 1, ny), (x + 1, ny)]
+            else:
+                tries = [(x + 1, ny), (x - 1, ny)]
+            for tx, ty in tries:
+                if 0 <= tx < w and 0 <= ty < h and g[ty, tx] == EMPTY:
+                    g[y, x] = EMPTY
+                    g[ty, tx] = MAGMA
+                    c[ty, tx] = col
+                    x, y = tx, ty
+                    moved = True
+                    break
+
+        # Random lateral drift
+        if not moved:
+            if random.random() < 0.3:
+                lx = x + (1 if random.random() < 0.5 else -1)
+                if 0 <= lx < w and g[y, lx] == EMPTY:
+                    g[y, x] = EMPTY
+                    g[y, lx] = MAGMA
+                    c[y, lx] = col
+                    moved = True
+
+        # Magma lasts even longer than napalm (nearly permanent)
+        if random.random() < 0.0003:
+            g[y, x] = EMPTY
+
+
 def _bresenham(x0, y0, x1, y1):
     points = []
     dx = abs(x1 - x0)
@@ -1308,6 +1417,7 @@ class SandWindow:
     MODE_FIREBOMB = 19
     MODE_DIRT = 20
     MODE_MATCH = 21
+    MODE_MAGMA = 22
 
     def __init__(self, window_width, window_height):
         self.visible = False
@@ -1405,6 +1515,8 @@ class SandWindow:
                                       color=(80, 80, 130), active_color=(200, 200, 255)); x += bw + margin
         self._btn_ice = _Button(x, row2_y, bw, bh, "ICE", font_size=24,
                                 color=(60, 90, 120), active_color=(180, 220, 255)); x += bw + margin
+        self._btn_magma = _Button(x, row2_y, bw, bh, "MAGMA", font_size=22,
+                                  color=(120, 40, 0), active_color=(255, 100, 0)); x += bw + margin
 
         quit_h = bh * 2 + margin
         self._btn_quit = _Button(self._ww - bw - margin, row1_y, bw, quit_h, "QUIT",
@@ -1416,7 +1528,7 @@ class SandWindow:
             self._btn_gnome, self._btn_fire, self._btn_gunpowder, self._btn_napalm,
             self._btn_gasoline, self._btn_water, self._btn_confetti, self._btn_bomb,
             self._btn_money, self._btn_firebomb, self._btn_dirt, self._btn_match,
-            self._btn_poison, self._btn_holywater, self._btn_ice,
+            self._btn_poison, self._btn_holywater, self._btn_ice, self._btn_magma,
             self._btn_wind, self._btn_wind_dir, self._btn_gravity,
             self._btn_slow, self._btn_fast, self._btn_clear,
             self._btn_fill,
@@ -1480,6 +1592,7 @@ class SandWindow:
         self._btn_firebomb.active = (self._mode == self.MODE_FIREBOMB)
         self._btn_dirt.active = (self._mode == self.MODE_DIRT)
         self._btn_match.active = (self._mode == self.MODE_MATCH)
+        self._btn_magma.active = (self._mode == self.MODE_MAGMA)
         self._btn_fill.active = (self._mode == self.MODE_FILL)
         # Show what material fill will use
         _fill_names = {
@@ -1657,6 +1770,9 @@ class SandWindow:
         if self._btn_match.hit(px, py):
             self._mode = self.MODE_MATCH
             self._update_button_states(); return
+        if self._btn_magma.hit(px, py):
+            self._mode = self.MODE_MAGMA
+            self._update_button_states(); return
         if self._btn_fill.hit(px, py):
             self._mode = self.MODE_FILL
             self._update_button_states(); return
@@ -1781,6 +1897,11 @@ class SandWindow:
                 for _ in range(3):
                     rx = gx + random.randint(-1, 1)
                     ry = gy + random.randint(-1, 0)
+                    self._state.add(MAGMA, rx, ry, random.choice(_MAGMA_COLORS))
+            elif self._mode == self.MODE_MAGMA:
+                for _ in range(15):
+                    rx = gx + random.randint(-3, 3)
+                    ry = gy + random.randint(-2, 2)
                     self._state.add(MAGMA, rx, ry, random.choice(_MAGMA_COLORS))
             elif self._mode == self.MODE_FILL:
                 self._flood_fill(gx, gy)
@@ -1969,6 +2090,13 @@ class SandWindow:
                 self._state.add(MAGMA, rx, ry, random.choice(_MAGMA_COLORS))
             self._last_wall_gx = None
             self._last_wall_gy = None
+        elif self._mode == self.MODE_MAGMA:
+            for _ in range(8):
+                rx = gx + random.randint(-2, 2)
+                ry = gy + random.randint(-2, 2)
+                self._state.add(MAGMA, rx, ry, random.choice(_MAGMA_COLORS))
+            self._last_wall_gx = None
+            self._last_wall_gy = None
         elif self._mode == self.MODE_FILL:
             # One-shot fill per pinch, same as gnome
             if not getattr(self, '_fill_done_this_pinch', False):
@@ -2027,7 +2155,7 @@ class SandWindow:
     _SCROLL_MODES = [
         MODE_POUR, MODE_HAND, MODE_WOOD, MODE_CONCRETE, MODE_ERASE,
         MODE_GNOME, MODE_FIRE, MODE_GUNPOWDER, MODE_NAPALM, MODE_GASOLINE,
-        MODE_WATER, MODE_CONFETTI, MODE_POISON, MODE_HOLYWATER, MODE_ICE, MODE_BOMB, MODE_FIREBOMB, MODE_MONEY, MODE_DIRT, MODE_MATCH, MODE_FILL,
+        MODE_WATER, MODE_CONFETTI, MODE_POISON, MODE_HOLYWATER, MODE_ICE, MODE_BOMB, MODE_FIREBOMB, MODE_MONEY, MODE_DIRT, MODE_MATCH, MODE_MAGMA, MODE_FILL,
     ]
 
     def handle_scroll(self, direction):
@@ -2039,7 +2167,7 @@ class SandWindow:
         idx = (idx + direction) % len(self._SCROLL_MODES)
         self._mode = self._SCROLL_MODES[idx]
         # Update fill material for material modes
-        if self._mode not in (self.MODE_ERASE, self.MODE_GNOME, self.MODE_HAND, self.MODE_FILL, self.MODE_CONFETTI, self.MODE_POISON, self.MODE_HOLYWATER, self.MODE_ICE, self.MODE_BOMB, self.MODE_FIREBOMB, self.MODE_MONEY, self.MODE_MATCH):
+        if self._mode not in (self.MODE_ERASE, self.MODE_GNOME, self.MODE_HAND, self.MODE_FILL, self.MODE_CONFETTI, self.MODE_POISON, self.MODE_HOLYWATER, self.MODE_ICE, self.MODE_BOMB, self.MODE_FIREBOMB, self.MODE_MONEY, self.MODE_MATCH, self.MODE_MAGMA):
             self._fill_material = self._mode
         self._update_button_states()
 
@@ -2055,6 +2183,7 @@ class SandWindow:
             _step(self._state, self._wind_active, self._wind_dir, self._reverse_gravity)
             _step_fire(self._state)
             _step_napalm(self._state)
+            _step_magma(self._state)
 
             # Poison decay — settled poison disappears after 2 seconds
             g = self._state.grid
