@@ -96,8 +96,8 @@ class HandState:
         self.category_offset = 0.0
         self.smooth_card_offset = 0.0
         self.smooth_category_offset = 0.0
-        self.scroll_smoothing = 0.12        # smooth fluid catch-up (lower = silkier)
-        self.scroll_gain = 4.0              # balanced sensitivity
+        self.scroll_smoothing = 0.35        # snappier catch-up (less inertia)
+        self.scroll_gain = 2.5              # less overshoot
 
         # pinch state
         self.is_pinching = False

@@ -528,6 +528,50 @@ class _Gib:
 
 
 # ────────────────────────────────────────────
+# Spark — short-lived visual particle from explosions
+# ────────────────────────────────────────────
+
+_SPARK_COLORS = [
+    (255, 255, 100), (255, 220, 50), (255, 180, 30),
+    (255, 150, 0), (255, 255, 200), (255, 200, 80),
+]
+
+class _Spark:
+    """A tiny spark that flies outward from an explosion.
+    Dies instantly on touching anything or leaving bounds."""
+
+    def __init__(self, x, y):
+        self.x = float(x)
+        self.y = float(y)
+        angle = random.uniform(0, 2 * math.pi)
+        speed = random.uniform(2.0, 8.0)
+        self.vx = math.cos(angle) * speed
+        self.vy = math.sin(angle) * speed - random.uniform(1.0, 3.0)  # bias upward
+        self.color = random.choice(_SPARK_COLORS)
+        self.alive = True
+        self.life = 0
+
+    def step(self, grid):
+        h, w = grid.shape
+        self.vy += 0.25  # lighter gravity than gibs
+        self.x += self.vx
+        self.y += self.vy
+        self.life += 1
+        ix, iy = int(self.x), int(self.y)
+        # Die if out of bounds
+        if ix < 0 or ix >= w or iy < 0 or iy >= h:
+            self.alive = False
+            return
+        # Die if touching anything
+        if grid[iy, ix] != EMPTY:
+            self.alive = False
+            return
+        # Die after 40 frames max (~1s)
+        if self.life > 40:
+            self.alive = False
+
+
+# ────────────────────────────────────────────
 # Bomb — pixelated TNT with 3-second fuse
 # ────────────────────────────────────────────
 
@@ -712,7 +756,7 @@ class _Bomb:
             surface.blit(txt, (cx - 12, cy + 12))
 
 
-def _explode_bomb(state, bx, by, gnomes, gibs, is_fire=False):
+def _explode_bomb(state, bx, by, gnomes, gibs, sparks, is_fire=False):
     """Simple explosion: destroys everything in a circle.
     is_fire: if True, fills the blast area with napalm instead of just clearing."""
     g = state.grid
@@ -753,6 +797,10 @@ def _explode_bomb(state, bx, by, gnomes, gibs, is_fire=False):
                     g[ny, nx] = NAPALM
                     c[ny, nx] = random.choice(_NAPALM_COLORS)
     # Regular bomb: just the circle of destruction, no fire
+
+    # Shower of sparks from the explosion
+    for _ in range(random.randint(30, 50)):
+        sparks.append(_Spark(cx, cy))
 
     # Kill gnomes in blast radius — gibs fly out
     for gnome in gnomes:
@@ -1373,6 +1421,7 @@ class SandWindow:
         self._last_wall_gy = None
         self._gnomes = []
         self._gibs = []
+        self._sparks = []
         self._bombs = []
         self._bomb_font = pygame.font.Font(None, 20)
         self._poison_settle = {}        # (x,y) -> time when poison settled
@@ -1485,6 +1534,7 @@ class SandWindow:
         self._last_wall_gy = None
         self._gnomes = []
         self._gibs = []
+        self._sparks = []
         self._bombs = []
         self._poison_settle = {}
         self._gnome_spawned_this_pinch = False
@@ -1731,6 +1781,7 @@ class SandWindow:
             self._state.clear_all()
             self._gnomes = []
             self._gibs = []
+            self._sparks = []
             self._bombs = []
             self._poison_settle = {}
             return
@@ -2203,6 +2254,11 @@ class SandWindow:
                 gib.step(self._state.grid)
             self._gibs = [g for g in self._gibs if g.alive]
 
+            # Step sparks
+            for spark in self._sparks:
+                spark.step(self._state.grid)
+            self._sparks = [s for s in self._sparks if s.alive]
+
             # Step bombs — physics + fuse check
             for bomb in self._bombs:
                 bomb.step(self._state.grid)
@@ -2211,7 +2267,7 @@ class SandWindow:
             for bomb in self._bombs:
                 if bomb.exploded:
                     _explode_bomb(self._state, bomb.x, bomb.y,
-                                  self._gnomes, self._gibs, bomb.is_fire)
+                                  self._gnomes, self._gibs, self._sparks, bomb.is_fire)
                 elif bomb.alive:
                     new_bombs.append(bomb)
             self._bombs = new_bombs
@@ -2309,6 +2365,12 @@ class SandWindow:
             gx_px = int(gib.x * _CELL + _CELL // 2)
             gy_px = int(gib.y * _CELL + _CELL // 2)
             pygame.draw.rect(surface, gib.color, (gx_px - 2, gy_px - 2, 5, 5))
+
+        # Draw sparks (explosion shower)
+        for spark in self._sparks:
+            sx_px = int(spark.x * _CELL + _CELL // 2)
+            sy_px = int(spark.y * _CELL + _CELL // 2)
+            pygame.draw.circle(surface, spark.color, (sx_px, sy_px), 2)
 
         # Draw bombs
         for bomb in self._bombs:

@@ -20,6 +20,17 @@ def get_font(size: int) -> pygame.font.Font:
     return _font_cache[size]
 
 
+# Pre-rendered text surface cache: (text, size, color) -> Surface
+_text_cache: dict[tuple, pygame.Surface] = {}
+
+
+def _render_text(text: str, size: int, color: tuple) -> pygame.Surface:
+    key = (text, size, color)
+    if key not in _text_cache:
+        _text_cache[key] = get_font(size).render(text, True, color)
+    return _text_cache[key]
+
+
 def clamp(v, lo, hi):
     return lo if v < lo else hi if v > hi else v
 
@@ -27,6 +38,74 @@ def clamp(v, lo, hi):
 # ==============================
 # App icon
 # ==============================
+# Pre-computed brightened app colors
+_app_color_cache: dict[str, tuple] = {}
+
+# Cached pre-rendered card surfaces: (app_name, qw, qh, is_selected) -> Surface
+_card_surface_cache: dict[tuple, pygame.Surface] = {}
+_CARD_CACHE_MAX = 120          # evict old entries when cache grows too large
+
+
+def _quantize(v, step=4):
+    """Snap to nearest multiple of step — avoids creating a new surface per pixel."""
+    return max(step, (v + step // 2) // step * step)
+
+
+def _get_card_surface(app_name, w, h, br, gui_scale, is_selected):
+    """Return a pre-rendered card surface (SRCALPHA, cached, quantized).
+
+    Dimensions are quantized to 4px steps so the cache isn't rebuilt
+    on every tiny gui_scale change during zoom-wheel rotation.
+    """
+    qw, qh = _quantize(w), _quantize(h)
+    key = (app_name, qw, qh, is_selected)
+    if key in _card_surface_cache:
+        return _card_surface_cache[key]
+
+    # Evict oldest entries if cache is full
+    if len(_card_surface_cache) >= _CARD_CACHE_MAX:
+        for old_key in list(_card_surface_cache.keys())[:40]:
+            del _card_surface_cache[old_key]
+
+    # Selection outline adds padding
+    pad = int(6 * gui_scale) + max(2, int(8 * gui_scale)) if is_selected else 0
+    sw, sh = qw + pad * 2, qh + pad * 2
+
+    surf = pygame.Surface((sw, sh), pygame.SRCALPHA)
+
+    cx, cy = sw // 2, sh // 2
+
+    # Color
+    if app_name not in _app_color_cache:
+        base_color = APP_COLORS.get(app_name, (100, 100, 100))
+        _app_color_cache[app_name] = tuple(min(255, int(base_color[i] * 1.2)) for i in range(3))
+    color = _app_color_cache[app_name]
+
+    # Main rounded rect
+    card_rect = pygame.Rect(cx - qw // 2, cy - qh // 2, qw, qh)
+    pygame.draw.rect(surf, color, card_rect, border_radius=br)
+
+    # Selection border
+    if is_selected:
+        sel = pygame.Rect(card_rect.x - int(6 * gui_scale), card_rect.y - int(6 * gui_scale),
+                          card_rect.width + int(12 * gui_scale), card_rect.height + int(12 * gui_scale))
+        pygame.draw.rect(surf, (255, 255, 255), sel,
+                         width=max(2, int(8 * gui_scale)), border_radius=br)
+
+    # Icon letter
+    icon_size = max(24, int(120 * gui_scale))
+    icon_img = _render_text(app_name[0], icon_size, (255, 255, 255))
+    surf.blit(icon_img, icon_img.get_rect(center=(cx, cy - int(20 * gui_scale))))
+
+    # Name text
+    text_size = max(12, int(36 * gui_scale))
+    text_img = _render_text(app_name, text_size, (255, 255, 255))
+    surf.blit(text_img, text_img.get_rect(center=(cx, cy + int(60 * gui_scale))))
+
+    _card_surface_cache[key] = surf.convert_alpha()
+    return _card_surface_cache[key]
+
+
 def draw_app_icon(surface, app_name, x, y, base_w, base_h,
                   is_selected=False, zoom_scale=1.0, gui_scale=1.0):
     w = int(base_w * gui_scale)
@@ -35,20 +114,12 @@ def draw_app_icon(surface, app_name, x, y, base_w, base_h,
         w = int(w * zoom_scale)
         h = int(h * zoom_scale)
     br = max(12, int(50 * gui_scale))
+
+    card_surf = _get_card_surface(app_name, w, h, br, gui_scale, is_selected)
+    cw, ch = card_surf.get_size()
+    surface.blit(card_surf, (x - cw // 2, y - ch // 2))
+
     rect = pygame.Rect(x - w // 2, y - h // 2, w, h)
-    base_color = APP_COLORS.get(app_name, (100, 100, 100))
-    color = tuple(min(255, int(base_color[i] * 1.2)) for i in range(3))
-    pygame.draw.rect(surface, color, rect, border_radius=br)
-    if is_selected:
-        sel = pygame.Rect(rect.x - int(6 * gui_scale), rect.y - int(6 * gui_scale),
-                          rect.width + int(12 * gui_scale), rect.height + int(12 * gui_scale))
-        pygame.draw.rect(surface, (255, 255, 255), sel,
-                         width=max(2, int(8 * gui_scale)), border_radius=br)
-    ratio = w / max(1, int(base_w * gui_scale))
-    icon_img = get_font(max(24, int(120 * ratio))).render(app_name[0], True, (255, 255, 255, 180))
-    surface.blit(icon_img, icon_img.get_rect(center=(x, y - int(20 * gui_scale))))
-    text_img = get_font(max(12, int(36 * ratio))).render(app_name, True, (255, 255, 255))
-    surface.blit(text_img, text_img.get_rect(center=(x, y + int(60 * gui_scale))))
     return rect
 
 
@@ -64,12 +135,12 @@ def draw_cards(surface, center_x, center_y, card_offset, category_idx,
     first = max(0, int((-card_offset - window_width // 2) / stride) - 1)
     last = min(CARD_COUNT, int((-card_offset + window_width // 2) / stride) + 2)
     for i in range(first, last):
-        x, y = int(center_x + i * stride + card_offset), int(center_y)
+        x, y = round(center_x + i * stride + card_offset), round(center_y)
         if not (selected_card == i and selected_category == category_idx):
             rects.append((draw_app_icon(surface, names[i], x, y, base_w, base_h,
                                         False, 1.0, gui_scale), i, category_idx))
     for i in range(first, last):
-        x, y = int(center_x + i * stride + card_offset), int(center_y)
+        x, y = round(center_x + i * stride + card_offset), round(center_y)
         if selected_card == i and selected_category == category_idx:
             rects.append((draw_app_icon(surface, names[i], x, y, base_w, base_h,
                                         True, 1.0 + zoom_progress * 0.3, gui_scale), i, category_idx))
@@ -263,7 +334,7 @@ def draw_camera_thumbnail(surface, frame, window_width, landmarks=None):
             else:
                 pygame.draw.circle(thumb_surface, _FINGER_COLOR, (px, py), 2)
     else:
-        msg = get_font(18).render("no hand", True, (70, 70, 90))
+        msg = _render_text("no hand", 18, (70, 70, 90))
         thumb_surface.blit(msg, msg.get_rect(center=(_CAM_THUMB_W // 2, _CAM_THUMB_H // 2)))
 
     border = pygame.Rect(x - 2, y - 2, _CAM_THUMB_W + 4, _CAM_THUMB_H + 4)

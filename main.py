@@ -27,7 +27,18 @@ class App:
 
     def __init__(self):
         pygame.init()
-        self.screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
+        # SCALED uses an internal GPU texture (Metal on macOS) with true vsync —
+        # this is the only reliable way to eliminate tearing on Apple Silicon.
+        try:
+            self.screen = pygame.display.set_mode(
+                (WINDOW_WIDTH, WINDOW_HEIGHT),
+                pygame.DOUBLEBUF | pygame.SCALED,
+                vsync=1,
+            )
+        except Exception:
+            self.screen = pygame.display.set_mode(
+                (WINDOW_WIDTH, WINDOW_HEIGHT), pygame.DOUBLEBUF
+            )
         pygame.display.set_caption("Gesture Carousel")
         self.clock = pygame.time.Clock()
         self._last_frame_time = time.time()
@@ -263,8 +274,13 @@ class App:
         elif self._weather.visible:
             self._weather.draw(screen, st.gui_scale)
         else:
-            st.smooth_card_offset += (st.card_offset - st.smooth_card_offset) * sm
-            st.smooth_category_offset += (st.category_offset - st.smooth_category_offset) * sm
+            # While actively dragging, snap instantly so cards stick to finger
+            if st.is_pinching and st.scroll_unlocked:
+                st.smooth_card_offset = st.card_offset
+                st.smooth_category_offset = st.category_offset
+            else:
+                st.smooth_card_offset += (st.card_offset - st.smooth_card_offset) * sm
+                st.smooth_category_offset += (st.category_offset - st.smooth_category_offset) * sm
             cx, cy = WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2
             row_stride = int(ROW_BASE_SPACING * st.gui_scale)
             first = max(0, int(-st.smooth_category_offset / row_stride) - 1)
@@ -272,7 +288,7 @@ class App:
             for cat in range(first, last):
                 y = cy + cat * row_stride + st.smooth_category_offset
                 all_rects += draw_cards(
-                    screen, cx, int(y), st.smooth_card_offset, cat,
+                    screen, cx, round(y), st.smooth_card_offset, cat,
                     st.selected_card, st.selected_category, st.zoom_progress,
                     WINDOW_WIDTH, st.gui_scale, CARD_WIDTH, CARD_HEIGHT, CARD_SPACING,
                 )
