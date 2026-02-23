@@ -546,8 +546,8 @@ class _Bomb:
 
     def step(self, grid):
         h, w = grid.shape
-        # Gravity — real acceleration
-        self.vy += 0.4
+        # Gravity — strong acceleration for realistic fall
+        self.vy += 0.55
 
         # Friction when on ground
         on_ground = False
@@ -558,38 +558,35 @@ class _Bomb:
             on_ground = True
 
         if on_ground:
-            self.vx *= 0.85  # ground friction
+            self.vx *= 0.80  # ground friction
             # Rolling on slopes — check if surface is tilted
             if 0 <= ix_c < w:
-                # Check left-down and right-down to detect slope
                 left_empty = (ix_c - 1 >= 0 and below < h and grid[below, ix_c - 1] == EMPTY
                               and (iy_c < 0 or iy_c >= h or grid[iy_c, ix_c - 1] == EMPTY))
                 right_empty = (ix_c + 1 < w and below < h and grid[below, ix_c + 1] == EMPTY
                                and (iy_c < 0 or iy_c >= h or grid[iy_c, ix_c + 1] == EMPTY))
                 if left_empty and not right_empty:
-                    # Slope goes down-left — roll left
-                    self.vx -= 0.3
-                    self.vy += 0.2
+                    self.vx -= 0.35
+                    self.vy += 0.25
                 elif right_empty and not left_empty:
-                    # Slope goes down-right — roll right
-                    self.vx += 0.3
-                    self.vy += 0.2
+                    self.vx += 0.35
+                    self.vy += 0.25
                 elif left_empty and right_empty:
-                    # Sitting on a peak — nudge randomly
-                    self.vx += random.choice([-0.2, 0.2])
+                    self.vx += random.choice([-0.25, 0.25])
         else:
             self.vx *= 0.99  # air resistance
 
-        # Clamp velocity — allow faster falling but still scan properly
-        max_v = 2.0
-        if self.vy > max_v:
-            self.vy = max_v
-        if self.vy < -max_v:
-            self.vy = -max_v
-        if self.vx > max_v:
-            self.vx = max_v
-        if self.vx < -max_v:
-            self.vx = -max_v
+        # Clamp velocity — high enough for fast falls, scan row-by-row
+        max_vy = 4.0
+        max_vx = 2.5
+        if self.vy > max_vy:
+            self.vy = max_vy
+        if self.vy < -max_vy:
+            self.vy = -max_vy
+        if self.vx > max_vx:
+            self.vx = max_vx
+        if self.vx < -max_vx:
+            self.vx = -max_vx
 
         # Move X
         new_x = self.x + self.vx
@@ -599,7 +596,6 @@ class _Bomb:
             self.vx = -self.vx * 0.4
             new_x = max(0.0, min(float(w - 1), self.x))
         elif 0 <= iy_cur < h and grid[iy_cur, ix_new] != EMPTY:
-            # Hit a wall — check if we can step UP one cell (climb small bumps)
             if iy_cur - 1 >= 0 and grid[iy_cur - 1, ix_new] == EMPTY:
                 self.y -= 1.0
             else:
@@ -607,29 +603,30 @@ class _Bomb:
                 new_x = self.x
         self.x = new_x
 
-        # Move Y — scan each row to land on top
+        # Move Y — scan each row to land properly
         new_y = self.y + self.vy
         ix2 = int(self.x)
         iy_from = int(self.y)
         if 0 <= ix2 < w:
             if self.vy > 0:
-                # Falling — scan each row
                 iy_to = int(new_y)
                 for check_y in range(max(0, iy_from + 1), min(h, iy_to + 1)):
                     if grid[check_y, ix2] != EMPTY:
                         new_y = float(check_y - 1)
-                        self.vy = -abs(self.vy) * 0.2
-                        if abs(self.vy) < 0.3:
+                        # Bounce — proportional to impact speed
+                        impact = abs(self.vy)
+                        self.vy = -impact * 0.45
+                        if abs(self.vy) < 0.4:
                             self.vy = 0.0
                         break
                 else:
                     if iy_to >= h:
                         new_y = float(h - 1)
-                        self.vy = -abs(self.vy) * 0.2
-                        if abs(self.vy) < 0.3:
+                        impact = abs(self.vy)
+                        self.vy = -impact * 0.45
+                        if abs(self.vy) < 0.4:
                             self.vy = 0.0
             elif self.vy < 0:
-                # Rising
                 check_row = int(new_y)
                 if check_row < 0:
                     new_y = 0.0
@@ -763,9 +760,9 @@ def _explode_bomb(state, bx, by, gnomes, gibs, is_fire=False):
             continue  # may have been cleared by earlier push
         # Calculate push direction (away from center)
         angle = math.atan2(dy, dx)
-        # Push strength — stronger near blast, weaker at edge
+        # Push strength — much shorter so we see particles flying
         frac = 1.0 - (dist - radius * 0.6) / (force_radius - radius * 0.6)
-        strength = max(2, int(10 * frac))
+        strength = max(1, int(4 * frac))
         # Move particle outward
         for step in range(strength, 0, -1):
             tx = nx + int(math.cos(angle) * step)
