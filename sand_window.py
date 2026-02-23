@@ -35,6 +35,7 @@ HOLYWATER = 12
 ICE = 13
 MONEY = 14
 DIRT = 15
+MAGMA = 16
 
 _WOOD_COLOR = (139, 90, 43)
 _WOOD_COLORS = [(139, 90, 43), (120, 75, 35), (160, 105, 50), (110, 70, 30)]
@@ -48,6 +49,7 @@ _HOLYWATER_COLORS = [(200, 200, 255), (180, 180, 255), (220, 220, 255), (160, 18
 _ICE_COLORS = [(180, 220, 255), (160, 210, 250), (200, 230, 255), (140, 200, 245), (190, 225, 255)]
 _MONEY_COLORS = [(40, 180, 40), (30, 160, 30), (60, 200, 50), (20, 140, 20), (50, 190, 45)]
 _DIRT_COLORS = [(101, 67, 33), (85, 55, 25), (120, 80, 40), (90, 60, 30), (110, 72, 36)]
+_MAGMA_COLORS = [(255, 80, 0), (255, 50, 10), (255, 120, 20), (220, 40, 0), (255, 160, 30)]
 
 _FUN_COLORS = [
     (255, 69, 0), (255, 105, 180), (255, 255, 0),
@@ -874,8 +876,8 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False):
     c = state.colors
     h, w = g.shape
 
-    # Find all falling particles: sand, gunpowder, gasoline, water, confetti, poison, holy water, money, dirt
-    falling = (g == HEAVY) | (g == GUNPOWDER) | (g == GASOLINE) | (g == WATER) | (g == CONFETTI) | (g == POISON) | (g == HOLYWATER) | (g == MONEY) | (g == DIRT)
+    # Find all falling particles: sand, gunpowder, gasoline, water, confetti, poison, holy water, money, dirt, magma
+    falling = (g == HEAVY) | (g == GUNPOWDER) | (g == GASOLINE) | (g == WATER) | (g == CONFETTI) | (g == POISON) | (g == HOLYWATER) | (g == MONEY) | (g == DIRT) | (g == MAGMA)
     if not np.any(falling):
         return
 
@@ -895,7 +897,7 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False):
     for i in range(len(ys)):
         y, x = int(ys[i]), int(xs[i])
         ptype = g[y, x]
-        if ptype not in (HEAVY, GUNPOWDER, GASOLINE, WATER, CONFETTI, POISON, HOLYWATER, MONEY, DIRT):
+        if ptype not in (HEAVY, GUNPOWDER, GASOLINE, WATER, CONFETTI, POISON, HOLYWATER, MONEY, DIRT, MAGMA):
             continue  # already moved by another particle this step
         col = c[y, x].copy()
 
@@ -930,6 +932,25 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False):
         else:
             # Confetti destroys on contact — can't land, just vanishes
             if ptype == CONFETTI:
+                g[y, x] = EMPTY
+                c[y, x] = (0, 0, 0)
+                continue
+            # Magma destroys on contact — ignites whatever it touches
+            if ptype == MAGMA:
+                # Set fire to the cell below (what we hit)
+                if 0 <= ny < h and 0 <= x < w:
+                    cell_below = g[ny, x]
+                    if cell_below == GUNPOWDER:
+                        _ignite_gunpowder(state, x, ny)
+                    elif cell_below == GASOLINE:
+                        g[ny, x] = FIRE
+                        c[ny, x] = random.choice(_FIRE_COLORS)
+                    elif cell_below == ICE:
+                        g[ny, x] = WATER
+                        c[ny, x] = random.choice(_WATER_COLORS)
+                    elif cell_below not in (EMPTY, CONCRETE, WATER, FIRE, NAPALM):
+                        g[ny, x] = FIRE
+                        c[ny, x] = random.choice(_FIRE_COLORS)
                 g[y, x] = EMPTY
                 c[y, x] = (0, 0, 0)
                 continue
@@ -1286,6 +1307,7 @@ class SandWindow:
     MODE_MONEY = 18
     MODE_FIREBOMB = 19
     MODE_DIRT = 20
+    MODE_MATCH = 21
 
     def __init__(self, window_width, window_height):
         self.visible = False
@@ -1355,6 +1377,8 @@ class SandWindow:
                                      color=(120, 30, 0), active_color=(255, 80, 0)); x += bw + margin
         self._btn_dirt = _Button(x, row1_y, bw, bh, "DIRT", font_size=24,
                                  color=(60, 40, 20), active_color=(140, 90, 45)); x += bw + margin
+        self._btn_match = _Button(x, row1_y, bw, bh, "MATCH", font_size=22,
+                                  color=(100, 50, 10), active_color=(255, 140, 30)); x += bw + margin
 
         x = margin
         self._btn_wind = _Button(x, row2_y, bw, bh, "WIND", font_size=24); x += bw + margin
@@ -1391,7 +1415,7 @@ class SandWindow:
             self._btn_erase, self._btn_color,
             self._btn_gnome, self._btn_fire, self._btn_gunpowder, self._btn_napalm,
             self._btn_gasoline, self._btn_water, self._btn_confetti, self._btn_bomb,
-            self._btn_money, self._btn_firebomb, self._btn_dirt,
+            self._btn_money, self._btn_firebomb, self._btn_dirt, self._btn_match,
             self._btn_poison, self._btn_holywater, self._btn_ice,
             self._btn_wind, self._btn_wind_dir, self._btn_gravity,
             self._btn_slow, self._btn_fast, self._btn_clear,
@@ -1455,6 +1479,7 @@ class SandWindow:
         self._btn_money.active = (self._mode == self.MODE_MONEY)
         self._btn_firebomb.active = (self._mode == self.MODE_FIREBOMB)
         self._btn_dirt.active = (self._mode == self.MODE_DIRT)
+        self._btn_match.active = (self._mode == self.MODE_MATCH)
         self._btn_fill.active = (self._mode == self.MODE_FILL)
         # Show what material fill will use
         _fill_names = {
@@ -1629,6 +1654,9 @@ class SandWindow:
             self._mode = self.MODE_DIRT
             self._fill_material = self.MODE_DIRT
             self._update_button_states(); return
+        if self._btn_match.hit(px, py):
+            self._mode = self.MODE_MATCH
+            self._update_button_states(); return
         if self._btn_fill.hit(px, py):
             self._mode = self.MODE_FILL
             self._update_button_states(); return
@@ -1749,6 +1777,11 @@ class SandWindow:
                     rx = gx + random.randint(-5, 5)
                     ry = gy + random.randint(-5, 2)
                     self._state.add(DIRT, rx, ry, random.choice(_DIRT_COLORS))
+            elif self._mode == self.MODE_MATCH:
+                for _ in range(3):
+                    rx = gx + random.randint(-1, 1)
+                    ry = gy + random.randint(-1, 0)
+                    self._state.add(MAGMA, rx, ry, random.choice(_MAGMA_COLORS))
             elif self._mode == self.MODE_FILL:
                 self._flood_fill(gx, gy)
 
@@ -1929,6 +1962,13 @@ class SandWindow:
                 self._state.add(DIRT, rx, ry, random.choice(_DIRT_COLORS))
             self._last_wall_gx = None
             self._last_wall_gy = None
+        elif self._mode == self.MODE_MATCH:
+            for _ in range(2):
+                rx = gx + random.randint(-1, 1)
+                ry = gy + random.randint(-1, 0)
+                self._state.add(MAGMA, rx, ry, random.choice(_MAGMA_COLORS))
+            self._last_wall_gx = None
+            self._last_wall_gy = None
         elif self._mode == self.MODE_FILL:
             # One-shot fill per pinch, same as gnome
             if not getattr(self, '_fill_done_this_pinch', False):
@@ -1987,7 +2027,7 @@ class SandWindow:
     _SCROLL_MODES = [
         MODE_POUR, MODE_HAND, MODE_WOOD, MODE_CONCRETE, MODE_ERASE,
         MODE_GNOME, MODE_FIRE, MODE_GUNPOWDER, MODE_NAPALM, MODE_GASOLINE,
-        MODE_WATER, MODE_CONFETTI, MODE_POISON, MODE_HOLYWATER, MODE_ICE, MODE_BOMB, MODE_FIREBOMB, MODE_MONEY, MODE_DIRT, MODE_FILL,
+        MODE_WATER, MODE_CONFETTI, MODE_POISON, MODE_HOLYWATER, MODE_ICE, MODE_BOMB, MODE_FIREBOMB, MODE_MONEY, MODE_DIRT, MODE_MATCH, MODE_FILL,
     ]
 
     def handle_scroll(self, direction):
@@ -1999,7 +2039,7 @@ class SandWindow:
         idx = (idx + direction) % len(self._SCROLL_MODES)
         self._mode = self._SCROLL_MODES[idx]
         # Update fill material for material modes
-        if self._mode not in (self.MODE_ERASE, self.MODE_GNOME, self.MODE_HAND, self.MODE_FILL, self.MODE_CONFETTI, self.MODE_POISON, self.MODE_HOLYWATER, self.MODE_ICE, self.MODE_BOMB, self.MODE_FIREBOMB, self.MODE_MONEY):
+        if self._mode not in (self.MODE_ERASE, self.MODE_GNOME, self.MODE_HAND, self.MODE_FILL, self.MODE_CONFETTI, self.MODE_POISON, self.MODE_HOLYWATER, self.MODE_ICE, self.MODE_BOMB, self.MODE_FIREBOMB, self.MODE_MONEY, self.MODE_MATCH):
             self._fill_material = self._mode
         self._update_button_states()
 
