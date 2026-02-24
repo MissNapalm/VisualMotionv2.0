@@ -50,7 +50,7 @@ _fc: dict[int, pygame.font.Font] = {}
 def _f(sz: int) -> pygame.font.Font:
     sz = max(10, sz)
     if sz not in _fc:
-        _fc[sz] = pygame.font.Font(None, sz)
+        _fc[sz] = pygame.font.SysFont("Menlo", sz)
     return _fc[sz]
 
 
@@ -1169,7 +1169,7 @@ class MonitorWindow:
         if sec:
             ry = self._draw_status_badges(surface, rx, ry, half, s, p, now, sec)
 
-        max_content = max(cy, ry) - (y0 + self._scroll_offset)
+        max_content = max(cy, ry) - y0
         max_scroll = max(0, max_content - body.height)
         self._scroll_offset = min(self._scroll_offset, max_scroll)
 
@@ -1209,7 +1209,7 @@ class MonitorWindow:
                                       iface["name"].upper(), rows)
             ry += int(8 * s)
 
-        max_content = max(cy, ry) - (y0 + self._scroll_offset)
+        max_content = max(cy, ry) - y0
         max_scroll = max(0, max_content - body.height)
         self._scroll_offset = min(self._scroll_offset, max_scroll)
 
@@ -1267,7 +1267,7 @@ class MonitorWindow:
                                    snap["disk_r_hist"], snap["disk_w_hist"],
                                    _PURPLE, _PINK, max_dio, snap["hist_idx"])
 
-        max_content = max(cy, ry) - (y0 + self._scroll_offset)
+        max_content = max(cy, ry) - y0
         max_scroll = max(0, max_content - body.height)
         self._scroll_offset = min(self._scroll_offset, max_scroll)
 
