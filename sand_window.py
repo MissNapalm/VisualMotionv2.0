@@ -1387,7 +1387,7 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False, splash_dr
 
 def _step_fire(state):
     """Physics step for fire particles: rise upward, spread, consume."""
-    _FIRE_MAX_AGE = 108   # ~3 seconds at 36 fps
+    _FIRE_MAX_AGE = 54    # ~1.5 seconds at 36 fps
     g = state.grid
     c = state.colors
     fa = state.fire_age
@@ -1526,7 +1526,7 @@ def _step_fire(state):
 
         # Fire has a chance to die out — ramps up aggressively with age
         age = fa[y, x]
-        die_chance = 0.04 + (age / _FIRE_MAX_AGE) * 0.40
+        die_chance = 0.08 + (age / _FIRE_MAX_AGE) * 0.80
         if random.random() < die_chance:
             g[y, x] = EMPTY
             fa[y, x] = 0
