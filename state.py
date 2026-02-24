@@ -15,7 +15,7 @@ ROW_BASE_SPACING = CARD_HEIGHT + 80
 
 CATEGORIES = [
     ["Mail", "Music", "Browser", "Messages", "Calendar", "Maps", "Camera"],
-    ["Photos", "Notes", "Reminders", "Clock", "Weather", "Stocks", "Sand"],
+    ["Photos", "Notes", "Reminders", "Files", "Weather", "Monitor", "Sand"],
     ["YouTube", "Netflix", "Twitch", "Spotify", "Podcasts", "Books", "Games"],
 ]
 NUM_CATEGORIES = len(CATEGORIES)
@@ -24,8 +24,8 @@ APP_COLORS = {
     "Mail": (74, 144, 226),   "Music": (252, 61, 86),    "Safari": (35, 142, 250),
     "Messages": (76, 217, 100), "Calendar": (252, 61, 57), "Maps": (89, 199, 249),
     "Camera": (138, 138, 142), "Photos": (252, 203, 47),  "Notes": (255, 214, 10),
-    "Reminders": (255, 69, 58), "Clock": (30, 30, 30),    "Weather": (99, 204, 250),
-    "Stocks": (30, 30, 30),    "Sand": (252, 61, 86),     "YouTube": (255, 0, 0),
+    "Reminders": (255, 69, 58), "Files": (70, 140, 240),    "Weather": (99, 204, 250),
+    "Monitor": (0, 230, 120),    "Sand": (252, 61, 86),     "YouTube": (255, 0, 0),
     "Netflix": (229, 9, 20),   "Twitch": (145, 70, 255),  "Spotify": (30, 215, 96),
     "Podcasts": (146, 72, 223), "Books": (255, 124, 45),  "Games": (255, 45, 85),
     "Browser": (35, 142, 250), "Sand": (255, 200, 100),
@@ -131,9 +131,11 @@ class HandState:
         self.wheel_center_y = 0
         self.wheel_radius = 110
         self.gui_scale = 1.00
+        self.gui_scale_target = 1.00
         self.gui_scale_min = 0.60
         self.gui_scale_max = 1.80
         self.gui_scale_sensitivity = 0.55
+        self.gui_scale_smoothing = 0.25     # lower = smoother zoom (0.25 is silky)
 
         # misc
         self.current_fps = 0.0

@@ -16,10 +16,14 @@ from state import (
     HandState, CARD_COUNT, CARD_WIDTH, CARD_HEIGHT, CARD_SPACING,
     ROW_BASE_SPACING, CATEGORIES, NUM_CATEGORIES, WINDOW_WIDTH, WINDOW_HEIGHT,
 )
-from renderer import clamp, draw_cards, draw_wheel, draw_camera_thumbnail
+from renderer import (clamp, draw_cards, draw_wheel, draw_camera_thumbnail,
+                      draw_theme_button, theme_button_hit, toggle_theme, get_bg_color,
+                      draw_helix_graph, is_ice_theme)
 from weather_window import WeatherWindow
 from todo_window import TodoWindow
 from sand_window import SandWindow
+from files_window import FilesWindow
+from monitor_window import MonitorWindow
 
 
 class App:
@@ -66,6 +70,8 @@ class App:
         self._weather = WeatherWindow(WINDOW_WIDTH, WINDOW_HEIGHT)
         self._todo = TodoWindow(WINDOW_WIDTH, WINDOW_HEIGHT)
         self._sand = SandWindow(WINDOW_WIDTH, WINDOW_HEIGHT)
+        self._files = FilesWindow(WINDOW_WIDTH, WINDOW_HEIGHT)
+        self._monitor = MonitorWindow(WINDOW_WIDTH, WINDOW_HEIGHT)
         self._cur_thumb = (0, 0)
         self._cur_index = (0, 0)
         # Mouse input state (alternative to hand tracking)
@@ -76,7 +82,7 @@ class App:
 
     @property
     def _any_app_visible(self):
-        return self._weather.visible or self._todo.visible or self._sand.visible
+        return self._weather.visible or self._todo.visible or self._sand.visible or self._files.visible or self._monitor.visible
 
     def _process_wheel(self, hand):
         st = self.state
@@ -98,8 +104,8 @@ class App:
             elif diff < -math.pi:
                 diff += 2 * math.pi
             st.wheel_angle = (st.wheel_angle + diff * 2) % (2 * math.pi)
-            st.gui_scale = clamp(
-                st.gui_scale + diff * st.gui_scale_sensitivity,
+            st.gui_scale_target = clamp(
+                st.gui_scale_target + diff * st.gui_scale_sensitivity,
                 st.gui_scale_min, st.gui_scale_max,
             )
         st.last_finger_angle = ang
@@ -149,7 +155,8 @@ class App:
                 # Pinch-hold 1s to close app windows (generous drift allowance)
                 # Skip if todo keyboard is open (user is typing)
                 # Skip if Sand is open (Sand uses quit button only)
-                if self._any_app_visible and not self._sand.visible and st.pinch_start_pos:
+                # Skip if Files/Monitor is open (uses quit button + pinch taps for navigation)
+                if self._any_app_visible and not self._sand.visible and not self._files.visible and not self._monitor.visible and st.pinch_start_pos:
                     if not (self._todo.visible and self._todo._keyboard_open):
                         total = math.hypot(px - st.pinch_start_pos[0], py - st.pinch_start_pos[1])
                         if total <= 80 and time.time() - st.pinch_hold_start >= 1.0:
@@ -167,6 +174,18 @@ class App:
                     total = math.hypot(px - st.pinch_start_pos[0], py - st.pinch_start_pos[1])
                     if total > 8:  # small dead zone
                         self._sand.handle_pinch(px, py)
+
+                # Feed pinch-drag to Files app (scroll)
+                if self._files.visible and st.pinch_start_pos:
+                    total = math.hypot(px - st.pinch_start_pos[0], py - st.pinch_start_pos[1])
+                    if total > 8:
+                        self._files.handle_pinch_drag(px, py, st.gui_scale)
+
+                # Feed pinch-drag to Monitor app (scroll)
+                if self._monitor.visible and st.pinch_start_pos:
+                    total = math.hypot(px - st.pinch_start_pos[0], py - st.pinch_start_pos[1])
+                    if total > 8:
+                        self._monitor.handle_pinch_drag(px, py, st.gui_scale)
 
                 # Only scroll when no app window is open
                 if not self._any_app_visible and st.scroll_unlocked and st.pinch_start_pos:
@@ -202,6 +221,12 @@ class App:
             # Also end sand pinch tracking
             if self._sand.visible:
                 self._sand.handle_pinch_end()
+            # Also end files drag tracking
+            if self._files.visible:
+                self._files.handle_pinch_drag_end()
+            # Also end monitor drag tracking
+            if self._monitor.visible:
+                self._monitor.handle_pinch_drag_end()
 
     def _resolve_taps(self, all_rects):
         st = self.state
@@ -215,6 +240,10 @@ class App:
                     print("Closed weather window")
             elif self._sand.visible:
                 self._sand.handle_tap(tx, ty)
+            elif self._files.visible:
+                self._files.handle_tap(tx, ty, st.gui_scale)
+            elif self._monitor.visible:
+                self._monitor.handle_tap(tx, ty, st.gui_scale)
             else:
                 for rect, ci, ca in all_rects:
                     if rect.collidepoint(tx, ty):
@@ -241,6 +270,16 @@ class App:
                             if self._snd_doublepinch:
                                 self._snd_doublepinch.play()
                             print("Opened Sand")
+                        elif name == "Files":
+                            self._files.open()
+                            if self._snd_doublepinch:
+                                self._snd_doublepinch.play()
+                            print("Opened File Explorer")
+                        elif name == "Monitor":
+                            self._monitor.open()
+                            if self._snd_doublepinch:
+                                self._snd_doublepinch.play()
+                            print("Opened System Monitor")
                         break
             self._tap = None
         if self._double_tap:
@@ -252,12 +291,20 @@ class App:
             elif self._weather.visible:
                 self._weather.close()
                 print("Closed weather window (double pinch)")
+            elif self._files.visible:
+                # Double-pinch opens folders; if not on a folder, close explorer
+                if not self._files.handle_double_tap(dx, dy, st.gui_scale):
+                    self._files.close()
+                    print("Closed file explorer (double pinch)")
+            elif self._monitor.visible:
+                self._monitor.close()
+                print("Closed system monitor (double pinch)")
             self._double_tap = None
 
     def _draw(self, hand, pinch_now):
         st = self.state
         screen = self.screen
-        screen.fill((20, 20, 30))
+        screen.fill(get_bg_color())
 
         # Delta-time for frame-rate independent smoothing
         now = time.time()
@@ -266,6 +313,10 @@ class App:
         # Convert fixed alpha to dt-based: sm = 1 - (1 - base_alpha)^(dt * 60)
         sm = 1.0 - (1.0 - st.scroll_smoothing) ** (dt * 60.0)
 
+        # Smooth zoom interpolation (gui_scale chases gui_scale_target)
+        zoom_sm = 1.0 - (1.0 - st.gui_scale_smoothing) ** (dt * 60.0)
+        st.gui_scale += (st.gui_scale_target - st.gui_scale) * zoom_sm
+
         all_rects = []
         if self._sand.visible:
             self._sand.draw(screen, st.gui_scale)
@@ -273,6 +324,10 @@ class App:
             self._todo.draw(screen, st.gui_scale)
         elif self._weather.visible:
             self._weather.draw(screen, st.gui_scale)
+        elif self._files.visible:
+            self._files.draw(screen, st.gui_scale)
+        elif self._monitor.visible:
+            self._monitor.draw(screen, st.gui_scale)
         else:
             # While actively dragging, snap instantly so cards stick to finger
             if st.is_pinching and st.scroll_unlocked:
@@ -292,6 +347,11 @@ class App:
                     st.selected_card, st.selected_category, st.zoom_progress,
                     WINDOW_WIDTH, st.gui_scale, CARD_WIDTH, CARD_HEIGHT, CARD_SPACING,
                 )
+
+        if not self._any_app_visible:
+            if is_ice_theme():
+                draw_helix_graph(screen, WINDOW_WIDTH, WINDOW_HEIGHT)
+            draw_theme_button(screen)
 
         self._resolve_taps(all_rects)
         draw_wheel(screen, st, WINDOW_WIDTH, WINDOW_HEIGHT)
@@ -340,10 +400,18 @@ class App:
                         self._sand.handle_key(event.key, False)
                 if event.type == pygame.MOUSEWHEEL and self._sand.visible:
                     self._sand.handle_scroll(-event.y)  # scroll up = prev, down = next
+                if event.type == pygame.MOUSEWHEEL and self._files.visible:
+                    self._files.handle_scroll(-event.y)
+                if event.type == pygame.MOUSEWHEEL and self._monitor.visible:
+                    self._monitor.handle_scroll(-event.y)
                 # --- Mouse input (alternative to hand gestures) ---
                 if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     mx, my = event.pos
                     now = time.time()
+                    # Theme toggle button (only on carousel)
+                    if not self._any_app_visible and theme_button_hit(mx, my):
+                        toggle_theme()
+                        continue
                     self._mouse_down = True
                     self._mouse_down_pos = (mx, my)
                     self._mouse_down_time = now
@@ -351,6 +419,10 @@ class App:
                     # Instant response: select buttons or paint on click-down
                     if self._sand.visible:
                         self._sand.handle_tap(mx, my)
+                    elif self._files.visible:
+                        self._files.handle_tap(mx, my, self.state.gui_scale)
+                    elif self._monitor.visible:
+                        self._monitor.handle_tap(mx, my, self.state.gui_scale)
                 elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
                     if self._mouse_down:
                         mx, my = event.pos
@@ -364,9 +436,17 @@ class App:
                                     # Double-click = line tool
                                     if now - self._mouse_last_click_time < 0.4:
                                         self._sand.handle_double_click(mx, my)
+                                elif self._files.visible:
+                                    # Double-click = open folder
+                                    if now - self._mouse_last_click_time < 0.4:
+                                        self._files.handle_double_tap(mx, my, self.state.gui_scale)
                                 self._mouse_last_click_time = now
                         if self._sand.visible:
                             self._sand.handle_pinch_end()
+                        if self._files.visible:
+                            self._files.handle_pinch_drag_end()
+                        if self._monitor.visible:
+                            self._monitor.handle_pinch_drag_end()
                         self._mouse_down = False
                         self._mouse_down_pos = None
                 elif event.type == pygame.MOUSEMOTION and self._mouse_down:
@@ -376,6 +456,16 @@ class App:
                                            my - self._mouse_down_pos[1])
                         if total > 8:
                             self._sand.handle_pinch(mx, my)
+                    elif self._files.visible and self._mouse_down_pos:
+                        total = math.hypot(mx - self._mouse_down_pos[0],
+                                           my - self._mouse_down_pos[1])
+                        if total > 8:
+                            self._files.handle_pinch_drag(mx, my, self.state.gui_scale)
+                    elif self._monitor.visible and self._mouse_down_pos:
+                        total = math.hypot(mx - self._mouse_down_pos[0],
+                                           my - self._mouse_down_pos[1])
+                        if total > 8:
+                            self._monitor.handle_pinch_drag(mx, my, self.state.gui_scale)
             hand = self.tracker.latest()
             if hand is not None:
                 self._last_hand = hand

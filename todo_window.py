@@ -3,6 +3,7 @@ To-Do List app with on-screen keyboard.
 Pinch-tap to interact with buttons and type.
 """
 import pygame
+import theme_chrome as tc
 
 # ── Colours ─────────────────────────────────────────────────────────
 _BG = (30, 30, 50)
@@ -156,22 +157,34 @@ class TodoWindow:
         prev_clip = surface.get_clip()
         surface.set_clip(win)
 
+        p = tc.pal()  # None if classic
+
         # Background
-        pygame.draw.rect(surface, _BG, win)
+        if p:
+            tc.draw_window_frame(surface, win, s, p)
+        else:
+            pygame.draw.rect(surface, _BG, win)
 
         # Header bar
         hdr_h = max(40, int(56 * s))
-        hdr = pygame.Rect(ox, oy, W, hdr_h)
-        pygame.draw.rect(surface, _HEADER, hdr)
-        title = _f(max(20, int(36 * s))).render("To-Do List", True, _WHITE)
-        surface.blit(title, title.get_rect(midleft=(ox + int(20 * s), oy + hdr_h // 2)))
+        if p:
+            tc.draw_header(surface, win, hdr_h, "TO-DO LIST", s, p)
+        else:
+            hdr = pygame.Rect(ox, oy, W, hdr_h)
+            pygame.draw.rect(surface, _HEADER, hdr)
+            title = _f(max(20, int(36 * s))).render("To-Do List", True, _WHITE)
+            surface.blit(title, title.get_rect(midleft=(ox + int(20 * s), oy + hdr_h // 2)))
 
         # + Add button (only when keyboard closed)
         add_btn = self._add_btn_rect(s, win)
         if add_btn:
-            pygame.draw.rect(surface, _GREEN, add_btn, border_radius=max(6, int(14 * s)))
-            albl = _f(max(28, int(48 * s))).render("+ Add Task", True, _WHITE)
-            surface.blit(albl, albl.get_rect(center=add_btn.center))
+            if p:
+                tc.draw_angular_button(surface, add_btn,
+                                       "+ ADD TASK", s, p)
+            else:
+                pygame.draw.rect(surface, _GREEN, add_btn, border_radius=max(6, int(14 * s)))
+                albl = _f(max(28, int(48 * s))).render("+ Add Task", True, _WHITE)
+                surface.blit(albl, albl.get_rect(center=add_btn.center))
 
         # Task area
         self._task_hit_areas = []
@@ -188,13 +201,15 @@ class TodoWindow:
             add_reserve = max(60, int(88 * s)) + int(28 * s)  # button + gap
             avail_h = H - hdr_h - int(16 * s) - add_reserve
             # Close hint above the add button
-            hint = _f(max(14, int(22 * s))).render("double pinch to close", True, _GRAY)
+            hint_c = p["text_lo"] if p else _GRAY
+            hint = _f(max(14, int(22 * s))).render("double pinch to close", True, hint_c)
             surface.blit(hint, hint.get_rect(centerx=ox + W // 2, bottom=win.bottom - add_reserve + int(4 * s)))
 
         max_visible = max(1, int(avail_h / row_h))
 
         if len(self.tasks) == 0 and not self._keyboard_open:
-            empty = _f(max(16, int(30 * s))).render("No tasks yet — tap + Add Task", True, _GRAY)
+            empty_c = p["text_lo"] if p else _GRAY
+            empty = _f(max(16, int(30 * s))).render("No tasks yet — tap + Add Task", True, empty_c)
             surface.blit(empty, empty.get_rect(center=(ox + W // 2, task_y + avail_h // 2)))
         else:
             for i, task in enumerate(self.tasks):
@@ -204,23 +219,50 @@ class TodoWindow:
 
                 # Row background
                 row_rect = pygame.Rect(ox + pad, ry, W - pad * 2, row_h - int(4 * s))
-                pygame.draw.rect(surface, _DARK, row_rect, border_radius=max(4, int(8 * s)))
+                if p:
+                    row_bg_s = pygame.Surface((row_rect.width, row_rect.height), pygame.SRCALPHA)
+                    row_bg_s.fill((*p["stripe"][:3], 50))
+                    surface.blit(row_bg_s, row_rect.topleft)
+                    # Left accent bar
+                    accent_c = p["bright"] if task["done"] else p["dim"]
+                    pygame.draw.rect(surface, accent_c,
+                                     (row_rect.x, ry, max(2, int(3 * s)), row_h - int(4 * s)))
+                else:
+                    pygame.draw.rect(surface, _DARK, row_rect, border_radius=max(4, int(8 * s)))
 
                 # Checkbox
                 cb_size = max(16, int(26 * s))
                 cb_x = ox + pad + int(12 * s)
                 cb_y = ry + (row_h - cb_size) // 2
                 cb_rect = pygame.Rect(cb_x, cb_y, cb_size, cb_size)
-                if task["done"]:
-                    pygame.draw.rect(surface, _CHECK, cb_rect, border_radius=max(2, int(5 * s)))
-                    ck = _f(max(12, int(22 * s))).render("✓", True, _WHITE)
-                    surface.blit(ck, ck.get_rect(center=cb_rect.center))
+                if p:
+                    cut = max(3, int(5 * s))
+                    cb_pts = [(cb_rect.x, cb_rect.y),
+                              (cb_rect.right - cut, cb_rect.y),
+                              (cb_rect.right, cb_rect.y + cut),
+                              (cb_rect.right, cb_rect.bottom),
+                              (cb_rect.x + cut, cb_rect.bottom),
+                              (cb_rect.x, cb_rect.bottom - cut)]
+                    if task["done"]:
+                        pygame.draw.polygon(surface, p["bright"], cb_pts)
+                        ck = _f(max(12, int(22 * s))).render("OK", True, p["panel"])
+                        surface.blit(ck, ck.get_rect(center=cb_rect.center))
+                    else:
+                        pygame.draw.polygon(surface, p["dim"], cb_pts, max(1, int(2 * s)))
                 else:
-                    pygame.draw.rect(surface, _UNCHECK, cb_rect, border_radius=max(2, int(5 * s)))
+                    if task["done"]:
+                        pygame.draw.rect(surface, _CHECK, cb_rect, border_radius=max(2, int(5 * s)))
+                        ck = _f(max(12, int(22 * s))).render("✓", True, _WHITE)
+                        surface.blit(ck, ck.get_rect(center=cb_rect.center))
+                    else:
+                        pygame.draw.rect(surface, _UNCHECK, cb_rect, border_radius=max(2, int(5 * s)))
                 self._task_hit_areas.append(("check", i, cb_rect.inflate(int(10*s), int(10*s))))
 
                 # Task text
-                txt_color = _GRAY if task["done"] else _WHITE
+                if p:
+                    txt_color = p["text_lo"] if task["done"] else p["text_hi"]
+                else:
+                    txt_color = _GRAY if task["done"] else _WHITE
                 txt_font = _f(max(14, int(26 * s)))
                 display_text = task["text"]
                 if task["done"]:
@@ -235,17 +277,23 @@ class TodoWindow:
                 ex = row_rect.right - ebw * 2 - int(20 * s)
                 ey = ry + (row_h - ebh) // 2
                 edit_rect = pygame.Rect(ex, ey, ebw, ebh)
-                pygame.draw.rect(surface, _BLUE, edit_rect, border_radius=max(3, int(6 * s)))
-                elbl = _f(max(12, int(20 * s))).render("Edit", True, _WHITE)
-                surface.blit(elbl, elbl.get_rect(center=edit_rect.center))
+                if p:
+                    tc.draw_angular_button(surface, edit_rect, "EDIT", s, p)
+                else:
+                    pygame.draw.rect(surface, _BLUE, edit_rect, border_radius=max(3, int(6 * s)))
+                    elbl = _f(max(12, int(20 * s))).render("Edit", True, _WHITE)
+                    surface.blit(elbl, elbl.get_rect(center=edit_rect.center))
                 self._task_hit_areas.append(("edit", i, edit_rect))
 
                 # Delete button
                 dx = row_rect.right - ebw - int(8 * s)
                 del_rect = pygame.Rect(dx, ey, ebw, ebh)
-                pygame.draw.rect(surface, _RED, del_rect, border_radius=max(3, int(6 * s)))
-                dlbl = _f(max(12, int(20 * s))).render("Del", True, _WHITE)
-                surface.blit(dlbl, dlbl.get_rect(center=del_rect.center))
+                if p:
+                    tc.draw_angular_button(surface, del_rect, "DEL", s, p, danger=True)
+                else:
+                    pygame.draw.rect(surface, _RED, del_rect, border_radius=max(3, int(6 * s)))
+                    dlbl = _f(max(12, int(20 * s))).render("Del", True, _WHITE)
+                    surface.blit(dlbl, dlbl.get_rect(center=del_rect.center))
                 self._task_hit_areas.append(("delete", i, del_rect))
 
         # ── Keyboard section ──
@@ -256,29 +304,47 @@ class TodoWindow:
             # Input field
             input_h = max(36, int(48 * s))
             inp_rect = pygame.Rect(ox + pad, kb_y - input_h - int(8 * s), W - pad * 2, input_h)
-            pygame.draw.rect(surface, _INPUT_BG, inp_rect, border_radius=max(4, int(8 * s)))
-            pygame.draw.rect(surface, _BLUE, inp_rect, width=2, border_radius=max(4, int(8 * s)))
+            if p:
+                inp_cut = max(4, int(8 * s))
+                inp_pts = [
+                    (inp_rect.x, inp_rect.y),
+                    (inp_rect.right - inp_cut, inp_rect.y),
+                    (inp_rect.right, inp_rect.y + inp_cut),
+                    (inp_rect.right, inp_rect.bottom),
+                    (inp_rect.x + inp_cut, inp_rect.bottom),
+                    (inp_rect.x, inp_rect.bottom - inp_cut),
+                ]
+                pygame.draw.polygon(surface, p["panel"], inp_pts)
+                pygame.draw.polygon(surface, p["bright"], inp_pts, max(1, int(2 * s)))
+            else:
+                pygame.draw.rect(surface, _INPUT_BG, inp_rect, border_radius=max(4, int(8 * s)))
+                pygame.draw.rect(surface, _BLUE, inp_rect, width=2, border_radius=max(4, int(8 * s)))
 
             # Cursor blink
             cursor = "|" if (pygame.time.get_ticks() // 500) % 2 == 0 else ""
             inp_font = _f(max(16, int(28 * s)))
-            inp_lbl = inp_font.render(self._input_text + cursor, True, _WHITE)
+            inp_c = p["text_hi"] if p else _WHITE
+            inp_lbl = inp_font.render(self._input_text + cursor, True, inp_c)
             surface.blit(inp_lbl, inp_lbl.get_rect(midleft=(inp_rect.x + int(12 * s), inp_rect.centery)))
 
             # Editing indicator
             if self._edit_index >= 0:
-                edit_hint = _f(max(12, int(20 * s))).render("Editing task...", True, _YELLOW)
+                ei_c = p["text_md"] if p else _YELLOW
+                edit_hint = _f(max(12, int(20 * s))).render("Editing task...", True, ei_c)
                 surface.blit(edit_hint, edit_hint.get_rect(midright=(inp_rect.right - int(12 * s), inp_rect.centery)))
 
             # Keyboard background
             kb_rect = pygame.Rect(ox, kb_y, W, win.bottom - kb_y)
-            pygame.draw.rect(surface, (35, 35, 55), kb_rect)
+            kb_bg_c = p["header"] if p else (35, 35, 55)
+            pygame.draw.rect(surface, kb_bg_c, kb_rect)
+            if p:
+                # Accent line above keyboard
+                pygame.draw.line(surface, p["dim"], (ox, kb_y), (ox + W, kb_y), 1)
 
             # Draw key rows
             key_h = max(38, int(56 * s))
             key_gap = max(3, int(5 * s))
             row_gap = max(3, int(7 * s))
-            total_kb_rows = len(_ROWS) + 1  # +1 for special row
 
             cur_y = kb_y + int(6 * s)
             for row_idx, row in enumerate(_ROWS):
@@ -291,8 +357,17 @@ class TodoWindow:
                 for k_idx, ch in enumerate(row):
                     kx = start_x + k_idx * (key_w + key_gap)
                     kr = pygame.Rect(kx, cur_y, key_w, key_h)
-                    pygame.draw.rect(surface, _KEY_BG, kr, border_radius=max(3, int(6 * s)))
-                    klbl = _f(max(18, int(32 * s))).render(ch, True, _WHITE)
+                    if p:
+                        kcut = max(3, int(5 * s))
+                        kpts = [(kr.x, kr.y), (kr.right - kcut, kr.y),
+                                (kr.right, kr.y + kcut), (kr.right, kr.bottom),
+                                (kr.x + kcut, kr.bottom), (kr.x, kr.bottom - kcut)]
+                        pygame.draw.polygon(surface, p["btn_bg"], kpts)
+                        pygame.draw.polygon(surface, p["dim"], kpts, 1)
+                        klbl = _f(max(18, int(32 * s))).render(ch, True, p["text_hi"])
+                    else:
+                        pygame.draw.rect(surface, _KEY_BG, kr, border_radius=max(3, int(6 * s)))
+                        klbl = _f(max(18, int(32 * s))).render(ch, True, _WHITE)
                     surface.blit(klbl, klbl.get_rect(center=kr.center))
                     self._key_rects.append((kr, ch))
 
@@ -300,20 +375,26 @@ class TodoWindow:
 
             # Special row: SPACE, BACKSPACE, DONE
             spec_labels = _SPECIAL_ROW
-            spec_colors = [_KEY_BG, _RED, _GREEN]
-            spec_widths = [0.55, 0.2, 0.2]  # proportional widths
+            spec_colors_classic = [_KEY_BG, _RED, _GREEN]
+            spec_widths = [0.55, 0.2, 0.2]
             total_spec_gap = key_gap * (len(spec_labels) - 1)
             usable_w = W - pad * 2 - total_spec_gap
             sx = ox + pad
-            for si, (slbl, scol, sw_frac) in enumerate(zip(spec_labels, spec_colors, spec_widths)):
+            for si, (slbl, sw_frac) in enumerate(zip(spec_labels, spec_widths)):
                 skw = int(usable_w * sw_frac)
                 sr = pygame.Rect(sx, cur_y, skw, key_h)
-                pygame.draw.rect(surface, scol, sr, border_radius=max(3, int(6 * s)))
-                stxt = _f(max(18, int(30 * s))).render(slbl, True, _WHITE)
-                surface.blit(stxt, stxt.get_rect(center=sr.center))
+                if p:
+                    is_danger = (slbl == "⌫")
+                    tc.draw_angular_button(surface, sr, slbl, s, p, danger=is_danger)
+                else:
+                    scol = spec_colors_classic[si]
+                    pygame.draw.rect(surface, scol, sr, border_radius=max(3, int(6 * s)))
+                    stxt = _f(max(18, int(30 * s))).render(slbl, True, _WHITE)
+                    surface.blit(stxt, stxt.get_rect(center=sr.center))
                 self._key_rects.append((sr, slbl))
                 sx += skw + key_gap
 
         # Restore clip, draw border
         surface.set_clip(prev_clip)
-        pygame.draw.rect(surface, _WHITE, win, width=3, border_radius=max(8, int(22 * s)))
+        if not p:
+            pygame.draw.rect(surface, _WHITE, win, width=3, border_radius=max(8, int(22 * s)))

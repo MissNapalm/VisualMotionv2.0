@@ -4,6 +4,7 @@ No scrolling required: everything fits on one screen.
 """
 import math
 import pygame
+import theme_chrome as tc
 
 # ── Fake data ───────────────────────────────────────────────────────
 CITY = "San Francisco"
@@ -82,6 +83,27 @@ def _draw_cloud(surf, cx, cy, w):
     pygame.draw.rect(surf, col, (cx - r - r, cy, r * 4, r))
 
 
+def _draw_scifi_panel(surf, rect, s, p):
+    """Draw a small angular sub-panel (used for hourly / daily sections)."""
+    cut = max(4, int(10 * s))
+    pts = [
+        (rect.x, rect.y),
+        (rect.right - cut, rect.y),
+        (rect.right, rect.y + cut),
+        (rect.right, rect.bottom),
+        (rect.x + cut, rect.bottom),
+        (rect.x, rect.bottom - cut),
+    ]
+    bg_s = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+    bg_s.fill((*p["dark"][:3], 80))
+    surf.blit(bg_s, rect.topleft)
+    pygame.draw.polygon(surf, p["dim"], pts, max(1, int(2 * s)))
+    # Corner ticks
+    tk = max(4, int(8 * s))
+    pygame.draw.line(surf, p["bright"], (rect.x, rect.y), (rect.x + tk, rect.y), 1)
+    pygame.draw.line(surf, p["bright"], (rect.x, rect.y), (rect.x, rect.y + tk), 1)
+
+
 # ── WeatherWindow ──────────────────────────────────────────────────
 
 class WeatherWindow:
@@ -116,92 +138,169 @@ class WeatherWindow:
         ox, oy = win.x, win.y
         W, H = win.width, win.height
 
-        # Clip so nothing spills outside the window
+        p = tc.pal()  # None if classic
+
         prev_clip = surface.get_clip()
         surface.set_clip(win)
 
-        # ── sky gradient background ──
-        _grad(surface, win)
+        if p:
+            # ── Sci-fi / ice background ──
+            tc.draw_window_frame(surface, win, s, p)
+            tc.draw_header(surface, win, max(40, int(50 * s)), "WEATHER // FORECAST", s, p)
 
-        # ── cartoony sun + cloud ──
-        sun_x = ox + W - int(140 * s)
-        sun_y = oy + int(100 * s)
-        _draw_sun(surface, sun_x, sun_y, int(40 * s))
-        _draw_cloud(surface, sun_x - int(60 * s), sun_y + int(20 * s), int(70 * s))
+            top_y = oy + int(56 * s)
 
-        # -- TOP: city, big temp, description --
-        city_lbl = _f(int(44 * s)).render(CITY, True, _WHITE)
-        surface.blit(city_lbl, city_lbl.get_rect(centerx=ox + W // 2, top=oy + int(16 * s)))
+            # ── Big temperature display ──
+            city_lbl = _f(int(36 * s)).render(CITY, True, p["text_md"])
+            surface.blit(city_lbl, city_lbl.get_rect(centerx=ox + W // 2, top=top_y + int(4 * s)))
 
-        temp_lbl = _f(int(110 * s)).render(str(TEMP) + chr(176), True, _WHITE)
-        surface.blit(temp_lbl, temp_lbl.get_rect(centerx=ox + W // 2, top=oy + int(50 * s)))
+            temp_lbl = _f(int(100 * s)).render(str(TEMP) + chr(176), True, p["text_hi"])
+            surface.blit(temp_lbl, temp_lbl.get_rect(centerx=ox + W // 2, top=top_y + int(34 * s)))
 
-        desc_lbl = _f(int(32 * s)).render(DESC, True, _LTBLUE)
-        surface.blit(desc_lbl, desc_lbl.get_rect(centerx=ox + W // 2, top=oy + int(150 * s)))
+            desc_lbl = _f(int(28 * s)).render(DESC, True, p["text_lo"])
+            surface.blit(desc_lbl, desc_lbl.get_rect(centerx=ox + W // 2, top=top_y + int(126 * s)))
 
-        hilo_lbl = _f(int(28 * s)).render(
-            "H: " + str(HI) + chr(176) + "   L: " + str(LO) + chr(176), True, _LTBLUE)
-        surface.blit(hilo_lbl, hilo_lbl.get_rect(centerx=ox + W // 2, top=oy + int(180 * s)))
+            hilo_lbl = _f(int(24 * s)).render(
+                "H: " + str(HI) + chr(176) + "   L: " + str(LO) + chr(176), True, p["text_lo"])
+            surface.blit(hilo_lbl, hilo_lbl.get_rect(centerx=ox + W // 2, top=top_y + int(154 * s)))
 
-        # -- HOURLY ROW --
-        hr_y = oy + int(210 * s)
-        hr_h = int(100 * s)
-        hr_rect = pygame.Rect(ox + int(20 * s), hr_y, W - int(40 * s), hr_h)
-        _glass(surface, hr_rect, max(8, int(14 * s)))
+            # ── Hourly row (angular panel) ──
+            hr_y = top_y + int(184 * s)
+            hr_h = int(100 * s)
+            hr_rect = pygame.Rect(ox + int(20 * s), hr_y, W - int(40 * s), hr_h)
+            _draw_scifi_panel(surface, hr_rect, s, p)
 
-        col_w = hr_rect.width // len(HOURLY)
-        for i, (label, t) in enumerate(HOURLY):
-            cx = hr_rect.x + col_w * i + col_w // 2
-            lbl = _f(int(22 * s)).render(label, True, _LTBLUE)
-            surface.blit(lbl, lbl.get_rect(centerx=cx, top=hr_y + int(8 * s)))
-            icon_y = hr_y + int(36 * s)
-            if t >= 70:
-                pygame.draw.circle(surface, _YELLOW, (cx, icon_y), int(10 * s))
-            else:
-                pygame.draw.circle(surface, (200, 215, 240), (cx, icon_y), int(10 * s))
-                pygame.draw.circle(surface, (200, 215, 240), (cx + int(7 * s), icon_y), int(8 * s))
-            tv = _f(int(24 * s)).render(str(t) + chr(176), True, _WHITE)
-            surface.blit(tv, tv.get_rect(centerx=cx, top=hr_y + int(62 * s)))
+            col_w = hr_rect.width // len(HOURLY)
+            for i, (label, t) in enumerate(HOURLY):
+                cx = hr_rect.x + col_w * i + col_w // 2
+                lbl = _f(int(20 * s)).render(label, True, p["text_lo"])
+                surface.blit(lbl, lbl.get_rect(centerx=cx, top=hr_y + int(8 * s)))
+                # Temp bar indicator
+                bar_h_max = int(30 * s)
+                bar_frac = (t - 55) / 20.0
+                bar_h_px = max(4, int(bar_h_max * bar_frac))
+                bar_x = cx - int(4 * s)
+                bar_y = hr_y + int(34 * s) + bar_h_max - bar_h_px
+                pygame.draw.rect(surface, p["bright"], (bar_x, bar_y, int(8 * s), bar_h_px))
+                pygame.draw.rect(surface, p["dim"], (bar_x, bar_y, int(8 * s), bar_h_px), 1)
+                tv = _f(int(20 * s)).render(str(t) + chr(176), True, p["text_hi"])
+                surface.blit(tv, tv.get_rect(centerx=cx, top=hr_y + int(70 * s)))
 
-        # -- 7-DAY FORECAST --
-        dy_y = hr_y + hr_h + int(12 * s)
-        row_h = int(30 * s)
-        dy_h = int(30 * s) + row_h * len(DAILY)
-        dy_rect = pygame.Rect(ox + int(20 * s), dy_y, W - int(40 * s), dy_h)
-        _glass(surface, dy_rect, max(8, int(14 * s)))
+            # ── 7-day forecast (angular panel) ──
+            dy_y = hr_y + hr_h + int(12 * s)
+            row_h = int(28 * s)
+            dy_h = int(28 * s) + row_h * len(DAILY)
+            dy_rect = pygame.Rect(ox + int(20 * s), dy_y, W - int(40 * s), dy_h)
+            _draw_scifi_panel(surface, dy_rect, s, p)
 
-        hdr = _f(int(20 * s)).render("7-DAY FORECAST", True, _LTBLUE)
-        surface.blit(hdr, (dy_rect.x + int(14 * s), dy_y + int(6 * s)))
+            hdr = _f(int(18 * s)).render("7-DAY FORECAST", True, p["text_lo"])
+            surface.blit(hdr, (dy_rect.x + int(14 * s), dy_y + int(6 * s)))
 
-        for i, (day, hi, lo) in enumerate(DAILY):
-            ry = dy_y + int(28 * s) + i * row_h
-            if i > 0:
-                sep = pygame.Surface((dy_rect.width - int(28 * s), 1), pygame.SRCALPHA)
-                sep.fill((255, 255, 255, 40))
-                surface.blit(sep, (dy_rect.x + int(14 * s), ry - int(2 * s)))
-            d_lbl = _f(int(24 * s)).render(day, True, _WHITE)
-            surface.blit(d_lbl, (dy_rect.x + int(16 * s), ry))
-            lo_lbl = _f(int(22 * s)).render(str(lo) + chr(176), True, _LTBLUE)
-            surface.blit(lo_lbl, (dy_rect.x + int(130 * s), ry + int(2 * s)))
-            bar_x = dy_rect.x + int(190 * s)
-            bar_w = int(480 * s)
-            bar_h = max(4, int(10 * s))
-            bar_y = ry + int(8 * s)
-            pygame.draw.rect(surface, _BAR_BG, (bar_x, bar_y, bar_w, bar_h),
-                             border_radius=max(2, int(5 * s)))
-            lo_f = (lo - 48) / 30
-            hi_f = (hi - 48) / 30
-            fx = bar_x + int(lo_f * bar_w)
-            fw = max(6, int((hi_f - lo_f) * bar_w))
-            pygame.draw.rect(surface, _BAR_FG, (fx, bar_y, fw, bar_h),
-                             border_radius=max(2, int(5 * s)))
-            hi_lbl = _f(int(22 * s)).render(str(hi) + chr(176), True, _WHITE)
-            surface.blit(hi_lbl, (bar_x + bar_w + int(10 * s), ry + int(2 * s)))
+            for i, (day, hi, lo) in enumerate(DAILY):
+                ry = dy_y + int(26 * s) + i * row_h
+                if i > 0:
+                    tc.draw_separator(surface, dy_rect.x + int(14 * s),
+                                      dy_rect.right - int(14 * s), ry - int(2 * s), p)
+                d_lbl = _f(int(22 * s)).render(day, True, p["text_hi"])
+                surface.blit(d_lbl, (dy_rect.x + int(16 * s), ry))
+                lo_lbl = _f(int(20 * s)).render(str(lo) + chr(176), True, p["text_lo"])
+                surface.blit(lo_lbl, (dy_rect.x + int(120 * s), ry + int(2 * s)))
+                bar_x = dy_rect.x + int(180 * s)
+                bar_w = int(440 * s)
+                bar_h_px = max(4, int(8 * s))
+                bar_y = ry + int(7 * s)
+                pygame.draw.rect(surface, p["dark"], (bar_x, bar_y, bar_w, bar_h_px))
+                lo_f = (lo - 48) / 30
+                hi_f = (hi - 48) / 30
+                fx = bar_x + int(lo_f * bar_w)
+                fw = max(6, int((hi_f - lo_f) * bar_w))
+                pygame.draw.rect(surface, p["bright"], (fx, bar_y, fw, bar_h_px))
+                hi_lbl = _f(int(20 * s)).render(str(hi) + chr(176), True, p["text_hi"])
+                surface.blit(hi_lbl, (bar_x + bar_w + int(10 * s), ry + int(2 * s)))
 
-        # ── close hint ──
-        hint = _f(int(22 * s)).render("pinch outside to close", True, _LTBLUE)
-        surface.blit(hint, hint.get_rect(centerx=ox + W // 2, bottom=win.bottom - int(8 * s)))
+            # ── close hint ──
+            hint = _f(int(20 * s)).render("pinch outside to close", True, p["text_lo"])
+            surface.blit(hint, hint.get_rect(centerx=ox + W // 2, bottom=win.bottom - int(8 * s)))
+
+        else:
+            # ── Classic cartoony style ──
+            _grad(surface, win)
+
+            sun_x = ox + W - int(140 * s)
+            sun_y = oy + int(100 * s)
+            _draw_sun(surface, sun_x, sun_y, int(40 * s))
+            _draw_cloud(surface, sun_x - int(60 * s), sun_y + int(20 * s), int(70 * s))
+
+            city_lbl = _f(int(44 * s)).render(CITY, True, _WHITE)
+            surface.blit(city_lbl, city_lbl.get_rect(centerx=ox + W // 2, top=oy + int(16 * s)))
+
+            temp_lbl = _f(int(110 * s)).render(str(TEMP) + chr(176), True, _WHITE)
+            surface.blit(temp_lbl, temp_lbl.get_rect(centerx=ox + W // 2, top=oy + int(50 * s)))
+
+            desc_lbl = _f(int(32 * s)).render(DESC, True, _LTBLUE)
+            surface.blit(desc_lbl, desc_lbl.get_rect(centerx=ox + W // 2, top=oy + int(150 * s)))
+
+            hilo_lbl = _f(int(28 * s)).render(
+                "H: " + str(HI) + chr(176) + "   L: " + str(LO) + chr(176), True, _LTBLUE)
+            surface.blit(hilo_lbl, hilo_lbl.get_rect(centerx=ox + W // 2, top=oy + int(180 * s)))
+
+            hr_y = oy + int(210 * s)
+            hr_h = int(100 * s)
+            hr_rect = pygame.Rect(ox + int(20 * s), hr_y, W - int(40 * s), hr_h)
+            _glass(surface, hr_rect, max(8, int(14 * s)))
+
+            col_w = hr_rect.width // len(HOURLY)
+            for i, (label, t) in enumerate(HOURLY):
+                cx = hr_rect.x + col_w * i + col_w // 2
+                lbl = _f(int(22 * s)).render(label, True, _LTBLUE)
+                surface.blit(lbl, lbl.get_rect(centerx=cx, top=hr_y + int(8 * s)))
+                icon_y = hr_y + int(36 * s)
+                if t >= 70:
+                    pygame.draw.circle(surface, _YELLOW, (cx, icon_y), int(10 * s))
+                else:
+                    pygame.draw.circle(surface, (200, 215, 240), (cx, icon_y), int(10 * s))
+                    pygame.draw.circle(surface, (200, 215, 240), (cx + int(7 * s), icon_y), int(8 * s))
+                tv = _f(int(24 * s)).render(str(t) + chr(176), True, _WHITE)
+                surface.blit(tv, tv.get_rect(centerx=cx, top=hr_y + int(62 * s)))
+
+            dy_y = hr_y + hr_h + int(12 * s)
+            row_h = int(30 * s)
+            dy_h = int(30 * s) + row_h * len(DAILY)
+            dy_rect = pygame.Rect(ox + int(20 * s), dy_y, W - int(40 * s), dy_h)
+            _glass(surface, dy_rect, max(8, int(14 * s)))
+
+            hdr = _f(int(20 * s)).render("7-DAY FORECAST", True, _LTBLUE)
+            surface.blit(hdr, (dy_rect.x + int(14 * s), dy_y + int(6 * s)))
+
+            for i, (day, hi, lo) in enumerate(DAILY):
+                ry = dy_y + int(28 * s) + i * row_h
+                if i > 0:
+                    sep = pygame.Surface((dy_rect.width - int(28 * s), 1), pygame.SRCALPHA)
+                    sep.fill((255, 255, 255, 40))
+                    surface.blit(sep, (dy_rect.x + int(14 * s), ry - int(2 * s)))
+                d_lbl = _f(int(24 * s)).render(day, True, _WHITE)
+                surface.blit(d_lbl, (dy_rect.x + int(16 * s), ry))
+                lo_lbl = _f(int(22 * s)).render(str(lo) + chr(176), True, _LTBLUE)
+                surface.blit(lo_lbl, (dy_rect.x + int(130 * s), ry + int(2 * s)))
+                bar_x = dy_rect.x + int(190 * s)
+                bar_w = int(480 * s)
+                bar_h_px = max(4, int(10 * s))
+                bar_y = ry + int(8 * s)
+                pygame.draw.rect(surface, _BAR_BG, (bar_x, bar_y, bar_w, bar_h_px),
+                                 border_radius=max(2, int(5 * s)))
+                lo_f = (lo - 48) / 30
+                hi_f = (hi - 48) / 30
+                fx = bar_x + int(lo_f * bar_w)
+                fw = max(6, int((hi_f - lo_f) * bar_w))
+                pygame.draw.rect(surface, _BAR_FG, (fx, bar_y, fw, bar_h_px),
+                                 border_radius=max(2, int(5 * s)))
+                hi_lbl = _f(int(22 * s)).render(str(hi) + chr(176), True, _WHITE)
+                surface.blit(hi_lbl, (bar_x + bar_w + int(10 * s), ry + int(2 * s)))
+
+            hint = _f(int(22 * s)).render("pinch outside to close", True, _LTBLUE)
+            surface.blit(hint, hint.get_rect(centerx=ox + W // 2, bottom=win.bottom - int(8 * s)))
 
         # ── Restore clip and draw border on top ──
         surface.set_clip(prev_clip)
-        pygame.draw.rect(surface, _WHITE, win, width=3, border_radius=max(8, int(22 * s)))
+        if not p:
+            pygame.draw.rect(surface, _WHITE, win, width=3, border_radius=max(8, int(22 * s)))
