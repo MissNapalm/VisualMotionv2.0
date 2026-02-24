@@ -111,8 +111,8 @@ class HandState:
         self.last_pinch_y = None
         self.pinch_start_pos = None
         self.movement_threshold = 45        # dead zone before scroll starts
-        self.pinch_threshold = 0.065          # distance to START a pinch (more forgiving for quick taps)
-        self.pinch_release = 0.09             # distance to END a pinch (hysteresis)
+        self.pinch_threshold = 0.09           # distance to START a pinch (generous — catches quick taps)
+        self.pinch_release = 0.13             # distance to END a pinch (wide hysteresis so it stays locked)
         self.pinch_prev = False
         self.last_pinch_time = 0
         self.double_pinch_window = 0.4

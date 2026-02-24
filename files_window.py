@@ -5,6 +5,7 @@ Sound effects: browse.mp3 (enter folder), select.mp3 (select file),
                whoosh.mp3 (back / up).
 """
 import os
+import shutil
 import subprocess
 import pygame
 import theme_chrome as tc
@@ -74,6 +75,15 @@ class FilesWindow:
 
         # pinch-drag scroll state
         self._drag_last_y: float | None = None
+
+        # clipboard state
+        self._clipboard_path: str | None = None   # path of cut/copied item
+        self._clipboard_mode: str | None = None    # "cut" or "copy"
+
+        # action button rects (rebuilt each frame)
+        self._cut_btn_rect: pygame.Rect | None = None
+        self._copy_btn_rect: pygame.Rect | None = None
+        self._paste_btn_rect: pygame.Rect | None = None
 
         # sounds
         try:
@@ -172,9 +182,11 @@ class FilesWindow:
 
     # ── handle_tap ──────────────────────────────────────────────────
     def handle_tap(self, px: float, py: float, gui_scale: float = 1.0) -> bool:
-        """Process a pinch-tap or mouse click. Returns True if consumed.
-        Single tap SELECTS items (puts a box around them).
-        Use handle_double_tap() to open folders."""
+        """Single pinch-tap.
+        • Folders: open immediately (navigate in).
+        • Files: select the file (highlights it, shows CUT/COPY/PASTE).
+        • Tap already-selected file: open it with OS.
+        • Buttons: BACK / UP / QUIT / CUT / COPY / PASTE."""
         if not self.visible:
             return False
         ipx, ipy = int(px), int(py)
@@ -196,37 +208,90 @@ class FilesWindow:
             self._go_up()
             return True
 
-        # Entry icons — single tap = select / deselect
-        for rect, idx in self._entry_rects:
-            if rect.collidepoint(ipx, ipy):
-                if self._selected_idx == idx:
-                    self._selected_idx = -1   # deselect
-                else:
-                    self._selected_idx = idx  # select
-                if self._snd_select:
-                    self._snd_select.play()
-                return True
-        return False
+        # CUT button
+        if self._cut_btn_rect and self._cut_btn_rect.collidepoint(ipx, ipy):
+            if 0 <= self._selected_idx < len(self._entries):
+                self._clipboard_path = self._entries[self._selected_idx]["path"]
+                self._clipboard_mode = "cut"
+                print(f"CUT: {self._clipboard_path}")
+            return True
 
-    def handle_double_tap(self, px: float, py: float, gui_scale: float = 1.0) -> bool:
-        """Double-pinch / double-click opens a folder or a file with the OS."""
-        if not self.visible:
-            return False
-        ipx, ipy = int(px), int(py)
+        # COPY button
+        if self._copy_btn_rect and self._copy_btn_rect.collidepoint(ipx, ipy):
+            if 0 <= self._selected_idx < len(self._entries):
+                self._clipboard_path = self._entries[self._selected_idx]["path"]
+                self._clipboard_mode = "copy"
+                print(f"COPY: {self._clipboard_path}")
+            return True
+
+        # PASTE button
+        if self._paste_btn_rect and self._paste_btn_rect.collidepoint(ipx, ipy):
+            self._do_paste()
+            return True
+
+        # Entry icons
         for rect, idx in self._entry_rects:
             if rect.collidepoint(ipx, ipy):
                 entry = self._entries[idx]
                 if entry["is_dir"]:
+                    # Folders: open immediately on single tap
                     self._navigate(entry["path"])
-                    return True
                 else:
-                    # Open the file with the default OS application
-                    try:
-                        subprocess.Popen(["open", entry["path"]])
-                    except Exception:
-                        pass
-                    return True
+                    # Files: select (or open if already selected)
+                    if self._selected_idx == idx:
+                        # Already selected — open with OS
+                        try:
+                            subprocess.Popen(["open", entry["path"]])
+                        except Exception:
+                            pass
+                        self._selected_idx = -1
+                    else:
+                        self._selected_idx = idx
+                        if self._snd_select:
+                            self._snd_select.play()
+                return True
+        # Tapped empty space — deselect
+        self._selected_idx = -1
         return False
+
+    def _do_paste(self):
+        """Paste the clipboard item into the current directory."""
+        if not self._clipboard_path or not os.path.exists(self._clipboard_path):
+            self._clipboard_path = None
+            self._clipboard_mode = None
+            return
+        src = self._clipboard_path
+        name = os.path.basename(src)
+        dest = os.path.join(self._cwd, name)
+
+        try:
+            if self._clipboard_mode == "cut":
+                if os.path.abspath(src) == os.path.abspath(dest):
+                    pass  # same location — no-op
+                else:
+                    shutil.move(src, dest)
+                    print(f"MOVED: {src} -> {dest}")
+                self._clipboard_path = None
+                self._clipboard_mode = None
+            elif self._clipboard_mode == "copy":
+                if os.path.abspath(src) == os.path.abspath(dest):
+                    # Same dir — make a _copy1 variant
+                    base, ext = os.path.splitext(name)
+                    counter = 1
+                    while os.path.exists(dest):
+                        dest = os.path.join(self._cwd, f"{base}_copy{counter}{ext}")
+                        counter += 1
+                if os.path.isdir(src):
+                    shutil.copytree(src, dest)
+                else:
+                    shutil.copy2(src, dest)
+                print(f"COPIED: {src} -> {dest}")
+        except Exception as e:
+            print(f"Paste error: {e}")
+
+        self._refresh()
+        if self._snd_browse:
+            self._snd_browse.play()
 
     def handle_scroll(self, dy: int):
         """Mouse wheel scroll."""
@@ -456,7 +521,7 @@ class FilesWindow:
                 pygame.draw.rect(surface, _SCROLLBAR_T,
                                  (sb_x, sb_thumb_y, sb_w, sb_thumb_h), border_radius=3)
 
-        # ── Footer: BACK / UP / QUIT buttons at the BOTTOM ──
+        # ── Footer: BACK / UP / [CUT/COPY/PASTE] / QUIT ──
         footer_y = win.bottom - footer_h
         # Separator line above footer
         if p:
@@ -464,46 +529,112 @@ class FilesWindow:
         else:
             pygame.draw.line(surface, _LTGRAY, (win.x, footer_y), (win.right, footer_y), 2)
 
-        btn_w = int(200 * s)
+        has_selection = 0 <= self._selected_idx < len(self._entries)
+        has_clipboard = (self._clipboard_path is not None
+                         and os.path.exists(self._clipboard_path or ""))
+
         btn_h = int(55 * s)
         btn_y = footer_y + (footer_h - btn_h) // 2
-        btn_gap = int(14 * s)
+        btn_gap = int(10 * s)
+        nav_btn_w = int(130 * s)
+        action_btn_w = int(110 * s)
+        quit_btn_w = int(130 * s)
 
-        # Back button (bottom-left)
-        btn_x = win.x + int(16 * s)
-        self._back_btn_rect = pygame.Rect(btn_x, btn_y, btn_w, btn_h)
+        # ── Back button (left)
+        btn_x = win.x + int(12 * s)
+        self._back_btn_rect = pygame.Rect(btn_x, btn_y, nav_btn_w, btn_h)
         can_back = len(self._history) > 0
         if p:
-            tc.draw_angular_button(surface, self._back_btn_rect, "<  BACK", s, p, enabled=can_back)
+            tc.draw_angular_button(surface, self._back_btn_rect, "< BACK", s, p, enabled=can_back)
         else:
             bbg = _BTN_BG if can_back else (35, 35, 50)
             bbc = _BLUE if can_back else _LTGRAY
             pygame.draw.rect(surface, bbg, self._back_btn_rect, border_radius=10)
             pygame.draw.rect(surface, bbc, self._back_btn_rect, width=2, border_radius=10)
-            bl = _f(int(28 * s)).render("<  BACK", True, _BTN_TEXT if can_back else _LTGRAY)
+            bl = _f(int(22 * s)).render("< BACK", True, _BTN_TEXT if can_back else _LTGRAY)
             surface.blit(bl, bl.get_rect(center=self._back_btn_rect.center))
 
-        # Up button (next to back)
-        ux = btn_x + btn_w + btn_gap
-        self._up_btn_rect = pygame.Rect(ux, btn_y, btn_w, btn_h)
+        # ── Up button
+        btn_x += nav_btn_w + btn_gap
+        self._up_btn_rect = pygame.Rect(btn_x, btn_y, nav_btn_w, btn_h)
         if p:
-            tc.draw_angular_button(surface, self._up_btn_rect, "^  UP", s, p)
+            tc.draw_angular_button(surface, self._up_btn_rect, "^ UP", s, p)
         else:
             pygame.draw.rect(surface, _BTN_BG, self._up_btn_rect, border_radius=10)
             pygame.draw.rect(surface, _BLUE, self._up_btn_rect, width=2, border_radius=10)
-            ul = _f(int(28 * s)).render("^  UP", True, _BTN_TEXT)
+            ul = _f(int(22 * s)).render("^ UP", True, _BTN_TEXT)
             surface.blit(ul, ul.get_rect(center=self._up_btn_rect.center))
 
-        # Quit button (bottom-right)
-        qx = win.right - btn_w - int(16 * s)
-        self._quit_btn_rect = pygame.Rect(qx, btn_y, btn_w, btn_h)
+        # ── CUT / COPY / PASTE (only shown when a file is selected) ──
+        self._cut_btn_rect = None
+        self._copy_btn_rect = None
+        self._paste_btn_rect = None
+
+        if has_selection:
+            btn_x += nav_btn_w + btn_gap + int(8 * s)
+
+            # CUT
+            self._cut_btn_rect = pygame.Rect(btn_x, btn_y, action_btn_w, btn_h)
+            if p:
+                tc.draw_angular_button(surface, self._cut_btn_rect, "CUT", s, p)
+            else:
+                pygame.draw.rect(surface, (80, 60, 30), self._cut_btn_rect, border_radius=10)
+                pygame.draw.rect(surface, (220, 180, 60), self._cut_btn_rect, width=2, border_radius=10)
+                cl = _f(int(22 * s)).render("CUT", True, (255, 220, 80))
+                surface.blit(cl, cl.get_rect(center=self._cut_btn_rect.center))
+
+            # COPY
+            btn_x += action_btn_w + btn_gap
+            self._copy_btn_rect = pygame.Rect(btn_x, btn_y, action_btn_w, btn_h)
+            if p:
+                tc.draw_angular_button(surface, self._copy_btn_rect, "COPY", s, p)
+            else:
+                pygame.draw.rect(surface, (30, 60, 80), self._copy_btn_rect, border_radius=10)
+                pygame.draw.rect(surface, (60, 180, 220), self._copy_btn_rect, width=2, border_radius=10)
+                col = _f(int(22 * s)).render("COPY", True, (80, 220, 255))
+                surface.blit(col, col.get_rect(center=self._copy_btn_rect.center))
+
+            # PASTE (only if clipboard has content)
+            if has_clipboard:
+                btn_x += action_btn_w + btn_gap
+                self._paste_btn_rect = pygame.Rect(btn_x, btn_y, action_btn_w, btn_h)
+                if p:
+                    tc.draw_angular_button(surface, self._paste_btn_rect, "PASTE", s, p)
+                else:
+                    pygame.draw.rect(surface, (30, 80, 40), self._paste_btn_rect, border_radius=10)
+                    pygame.draw.rect(surface, (60, 220, 80), self._paste_btn_rect, width=2, border_radius=10)
+                    pal = _f(int(22 * s)).render("PASTE", True, (80, 255, 100))
+                    surface.blit(pal, pal.get_rect(center=self._paste_btn_rect.center))
+        elif has_clipboard:
+            # No selection but clipboard has content — show PASTE only
+            btn_x += nav_btn_w + btn_gap + int(8 * s)
+            self._paste_btn_rect = pygame.Rect(btn_x, btn_y, action_btn_w, btn_h)
+            if p:
+                tc.draw_angular_button(surface, self._paste_btn_rect, "PASTE", s, p)
+            else:
+                pygame.draw.rect(surface, (30, 80, 40), self._paste_btn_rect, border_radius=10)
+                pygame.draw.rect(surface, (60, 220, 80), self._paste_btn_rect, width=2, border_radius=10)
+                pal = _f(int(22 * s)).render("PASTE", True, (80, 255, 100))
+                surface.blit(pal, pal.get_rect(center=self._paste_btn_rect.center))
+
+        # ── Quit button (right)
+        qx = win.right - quit_btn_w - int(12 * s)
+        self._quit_btn_rect = pygame.Rect(qx, btn_y, quit_btn_w, btn_h)
         if p:
-            tc.draw_angular_button(surface, self._quit_btn_rect, "X  QUIT", s, p, danger=True)
+            tc.draw_angular_button(surface, self._quit_btn_rect, "X QUIT", s, p, danger=True)
         else:
             pygame.draw.rect(surface, (140, 50, 50), self._quit_btn_rect, border_radius=10)
             pygame.draw.rect(surface, (200, 80, 80), self._quit_btn_rect, width=2, border_radius=10)
-            ql = _f(int(28 * s)).render("X  QUIT", True, _WHITE)
+            ql = _f(int(22 * s)).render("X QUIT", True, _WHITE)
             surface.blit(ql, ql.get_rect(center=self._quit_btn_rect.center))
+
+        # ── Clipboard status indicator ──
+        if has_clipboard:
+            clip_name = os.path.basename(self._clipboard_path)
+            clip_label = f"{'CUT' if self._clipboard_mode == 'cut' else 'COPIED'}: {clip_name}"
+            clip_c = (220, 180, 60) if self._clipboard_mode == "cut" else (80, 220, 255)
+            clip_img = _f(int(14 * s)).render(clip_label, True, clip_c)
+            surface.blit(clip_img, (win.x + int(12 * s), footer_y - int(18 * s)))
 
     # ── Icon drawing helpers ────────────────────────────────────────
     def _draw_folder_icon(self, surface, cx, cy, sz, s, p):

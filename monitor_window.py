@@ -1,14 +1,22 @@
 """
-System Monitor – live process list, CPU / memory gauges, animated graphs,
-network throughput, disk usage, uptime.  All data is real (via psutil-free
-stdlib calls on macOS).
+System Profile – tabbed HUD with real-time data:
 
+  TAB 0 – OVERVIEW    : CPU / Memory / Disk gauges, uptime, hostname, OS
+  TAB 1 – PROCESSES   : live top-N process list sorted by CPU
+  TAB 2 – HARDWARE    : chip model, cores, RAM, GPU, serial, display info
+  TAB 3 – NETWORK     : interfaces, IP addresses, throughput graph, Wi-Fi SSID
+  TAB 4 – STORAGE     : per-volume usage bars
+
+All data gathered with macOS stdlib (no psutil).
 Themed with theme_chrome angular HUD styling.
 """
 import math
 import os
 import platform
+import re
+import signal
 import subprocess
+import threading
 import time
 
 import pygame
@@ -27,6 +35,11 @@ _CYAN     = (0, 220, 220)
 _ORANGE   = (255, 140, 40)
 _PURPLE   = (180, 100, 255)
 _BLUE     = (60, 140, 255)
+_TEAL     = (0, 180, 180)
+_PINK     = (255, 100, 180)
+
+_TAB_NAMES = ["OVERVIEW", "PROCESSES", "HARDWARE", "NETWORK", "STORAGE"]
+_TAB_COUNT = len(_TAB_NAMES)
 
 # ── Font cache ──────────────────────────────────────────────────────
 _fc: dict[int, pygame.font.Font] = {}
@@ -39,50 +52,43 @@ def _f(sz: int) -> pygame.font.Font:
     return _fc[sz]
 
 
-# ── Data helpers (macOS, no psutil needed) ──────────────────────────
-def _cpu_percent() -> float:
-    """Return overall CPU usage 0-100 (fast, cached subprocess)."""
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  DATA HELPERS  (macOS, no psutil)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def _run(cmd, timeout=3):
     try:
-        out = subprocess.check_output(
-            ["top", "-l", "1", "-n", "0", "-s", "0"],
-            stderr=subprocess.DEVNULL, timeout=3
-        ).decode()
-        for line in out.splitlines():
-            if "CPU usage" in line:
-                # "CPU usage: 12.5% user, 8.2% sys, 79.2% idle"
-                parts = line.split(",")
-                for p in parts:
-                    if "idle" in p:
+        return subprocess.check_output(
+            cmd, stderr=subprocess.DEVNULL, timeout=timeout
+        ).decode(errors="replace").strip()
+    except Exception:
+        return ""
+
+
+def _cpu_percent() -> float:
+    out = _run(["top", "-l", "1", "-n", "0", "-s", "0"])
+    for line in out.splitlines():
+        if "CPU usage" in line:
+            for p in line.split(","):
+                if "idle" in p:
+                    try:
                         idle = float(p.strip().split("%")[0].split()[-1])
                         return round(100.0 - idle, 1)
-        return 0.0
-    except Exception:
-        return 0.0
+                    except Exception:
+                        pass
+    return 0.0
 
 
 def _mem_info() -> tuple[float, float, float]:
-    """Return (used_GB, total_GB, percent)."""
     try:
-        import ctypes, ctypes.util
-        libc = ctypes.CDLL(ctypes.util.find_library("c"))
-        # sysctl hw.memsize
-        out = subprocess.check_output(
-            ["sysctl", "-n", "hw.memsize"],
-            stderr=subprocess.DEVNULL, timeout=2,
-        ).decode().strip()
-        total_bytes = int(out)
+        total_bytes = int(_run(["sysctl", "-n", "hw.memsize"]))
         total_gb = total_bytes / (1024 ** 3)
-        # vm_stat for pages free / active / inactive / speculative / wired
-        vm = subprocess.check_output(
-            ["vm_stat"], stderr=subprocess.DEVNULL, timeout=2
-        ).decode()
-        page_size = 16384  # Apple Silicon default
+        vm = _run(["vm_stat"])
+        page_size = 16384
         for line in vm.splitlines():
             if "page size of" in line:
                 page_size = int(line.split()[-2])
                 break
-        pages_free = 0
-        pages_inactive = 0
+        pages_free = pages_inactive = 0
         for line in vm.splitlines():
             if "Pages free" in line:
                 pages_free = int(line.split()[-1].rstrip("."))
@@ -97,107 +103,236 @@ def _mem_info() -> tuple[float, float, float]:
 
 
 def _disk_info() -> tuple[float, float, float]:
-    """Return (used_GB, total_GB, percent) for /."""
     try:
         st = os.statvfs("/")
         total = st.f_blocks * st.f_frsize
         free = st.f_bavail * st.f_frsize
         used = total - free
-        total_gb = total / (1024 ** 3)
-        used_gb = used / (1024 ** 3)
-        pct = (used_gb / total_gb) * 100.0 if total_gb > 0 else 0.0
-        return round(used_gb, 1), round(total_gb, 1), round(pct, 1)
+        tg = total / (1024 ** 3)
+        ug = used / (1024 ** 3)
+        pct = (ug / tg) * 100.0 if tg > 0 else 0.0
+        return round(ug, 1), round(tg, 1), round(pct, 1)
     except Exception:
         return 0.0, 0.0, 0.0
 
 
 def _net_bytes() -> tuple[int, int]:
-    """Return (bytes_in, bytes_out) since boot via netstat."""
-    try:
-        out = subprocess.check_output(
-            ["netstat", "-ib"], stderr=subprocess.DEVNULL, timeout=2
-        ).decode()
-        total_in, total_out = 0, 0
-        for line in out.splitlines()[1:]:
-            parts = line.split()
-            if len(parts) >= 10 and parts[0].startswith("en"):
-                try:
-                    total_in += int(parts[6])
-                    total_out += int(parts[9])
-                except (ValueError, IndexError):
-                    pass
-        return total_in, total_out
-    except Exception:
-        return 0, 0
+    out = _run(["netstat", "-ib"])
+    ti, to = 0, 0
+    for line in out.splitlines()[1:]:
+        parts = line.split()
+        if len(parts) >= 10 and parts[0].startswith("en"):
+            try:
+                ti += int(parts[6])
+                to += int(parts[9])
+            except (ValueError, IndexError):
+                pass
+    return ti, to
 
 
 def _uptime_str() -> str:
     try:
-        out = subprocess.check_output(
-            ["sysctl", "-n", "kern.boottime"],
-            stderr=subprocess.DEVNULL, timeout=2,
-        ).decode()
-        # { sec = 1708796432, usec = ... }
+        out = _run(["sysctl", "-n", "kern.boottime"])
         sec = int(out.split("sec =")[1].split(",")[0].strip())
         elapsed = int(time.time()) - sec
-        days = elapsed // 86400
-        hrs = (elapsed % 86400) // 3600
-        mins = (elapsed % 3600) // 60
-        if days > 0:
-            return f"{days}d {hrs}h {mins}m"
-        return f"{hrs}h {mins}m"
+        d, rem = divmod(elapsed, 86400)
+        h, rem = divmod(rem, 3600)
+        m = rem // 60
+        return f"{d}d {h}h {m}m" if d else f"{h}h {m}m"
     except Exception:
         return "???"
 
 
-def _top_processes(n: int = 12) -> list[dict]:
-    """Return top N processes by CPU, with pid/name/cpu/mem."""
-    try:
-        out = subprocess.check_output(
-            ["ps", "-Ao", "pid,pcpu,pmem,comm", "-r"],
-            stderr=subprocess.DEVNULL, timeout=3,
-        ).decode()
-        procs = []
-        for line in out.splitlines()[1:]:
-            parts = line.split(None, 3)
-            if len(parts) < 4:
-                continue
-            try:
-                pid = int(parts[0])
-                cpu = float(parts[1])
-                mem = float(parts[2])
-                name = os.path.basename(parts[3])
-                procs.append({"pid": pid, "name": name, "cpu": cpu, "mem": mem})
-            except (ValueError, IndexError):
-                pass
-        return procs[:n]
-    except Exception:
-        return []
+def _top_processes(n: int = 16) -> list[dict]:
+    out = _run(["ps", "-Ao", "pid,pcpu,pmem,comm", "-r"])
+    procs = []
+    for line in out.splitlines()[1:]:
+        parts = line.split(None, 3)
+        if len(parts) < 4:
+            continue
+        try:
+            procs.append({
+                "pid": int(parts[0]),
+                "cpu": float(parts[1]),
+                "mem": float(parts[2]),
+                "name": os.path.basename(parts[3]),
+            })
+        except (ValueError, IndexError):
+            pass
+    return procs[:n]
 
 
 def _process_count() -> int:
+    out = _run(["ps", "-A"])
+    return max(0, len(out.strip().splitlines()) - 1)
+
+
+# ── Hardware info (cached once per open) ────────────────────────────
+_hw_cache: dict | None = None
+
+
+def _hardware_info() -> dict:
+    global _hw_cache
+    if _hw_cache is not None:
+        return _hw_cache
+    info: dict = {}
+    info["chip"] = _run(["sysctl", "-n", "machdep.cpu.brand_string"]) or "Apple Silicon"
+    info["cores_phys"] = _run(["sysctl", "-n", "hw.physicalcpu"]) or "?"
+    info["cores_log"] = _run(["sysctl", "-n", "hw.logicalcpu"]) or "?"
+    info["arch"] = platform.machine() or "?"
     try:
-        out = subprocess.check_output(
-            ["ps", "-A"], stderr=subprocess.DEVNULL, timeout=2
-        ).decode()
-        return max(0, len(out.strip().splitlines()) - 1)
+        ram_bytes = int(_run(["sysctl", "-n", "hw.memsize"]))
+        info["ram"] = f"{ram_bytes / (1024**3):.0f} GB"
     except Exception:
-        return 0
+        info["ram"] = "?"
+    info["model"] = _run(["sysctl", "-n", "hw.model"]) or "?"
+    info["os"] = platform.platform(terse=True)
+    info["os_ver"] = platform.mac_ver()[0] or "?"
+    info["hostname"] = platform.node() or "localhost"
+    info["kernel"] = _run(["uname", "-r"]) or "?"
+    # Serial number
+    sp = _run(["system_profiler", "SPHardwareDataType"], timeout=5)
+    serial = "?"
+    for line in sp.splitlines():
+        if "Serial Number" in line:
+            serial = line.split(":")[-1].strip()
+            break
+    info["serial"] = serial
+    # GPU
+    gpu_out = _run(["system_profiler", "SPDisplaysDataType"], timeout=5)
+    gpu = "?"
+    for line in gpu_out.splitlines():
+        if "Chipset Model" in line or "Chip" in line:
+            gpu = line.split(":")[-1].strip()
+            break
+    info["gpu"] = gpu
+    # Display resolution
+    res = "?"
+    for line in gpu_out.splitlines():
+        if "Resolution" in line:
+            res = line.split(":")[-1].strip()
+            break
+    info["display"] = res
+    # Battery
+    batt_out = _run(["pmset", "-g", "batt"])
+    batt = "N/A"
+    for line in batt_out.splitlines():
+        if "%" in line:
+            m = re.search(r"(\d+)%", line)
+            if m:
+                batt = m.group(0)
+                if "charging" in line.lower():
+                    batt += "  (charging)"
+                elif "discharging" in line.lower():
+                    batt += "  (battery)"
+                elif "charged" in line.lower():
+                    batt += "  (charged)"
+            break
+    info["battery"] = batt
+
+    _hw_cache = info
+    return info
 
 
-# ── Monitor Window ──────────────────────────────────────────────────
+# ── Network interface info ──────────────────────────────────────────
+def _network_interfaces() -> list[dict]:
+    out = _run(["ifconfig"])
+    ifaces = []
+    cur: dict | None = None
+    for line in out.splitlines():
+        if not line.startswith("\t") and ":" in line:
+            if cur:
+                ifaces.append(cur)
+            name = line.split(":")[0]
+            cur = {"name": name, "ips": [], "mac": "", "status": ""}
+        elif cur:
+            line = line.strip()
+            if line.startswith("inet "):
+                ip = line.split()[1]
+                cur["ips"].append(ip)
+            elif line.startswith("ether "):
+                cur["mac"] = line.split()[1]
+            elif line.startswith("status:"):
+                cur["status"] = line.split(":")[-1].strip()
+    if cur:
+        ifaces.append(cur)
+    return [i for i in ifaces if i["ips"] or i["status"] == "active"]
+
+
+def _wifi_ssid() -> str:
+    out = _run(["networksetup", "-getairportnetwork", "en0"])
+    if ":" in out:
+        return out.split(":", 1)[-1].strip()
+    return "?"
+
+
+# ── Volume / mount info ────────────────────────────────────────────
+def _volume_info() -> list[dict]:
+    out = _run(["df", "-H"])
+    vols = []
+    for line in out.splitlines()[1:]:
+        parts = line.split()
+        if len(parts) < 6:
+            continue
+        mount = parts[-1]
+        if mount.startswith("/dev") or mount == "/private/var/vm":
+            continue
+        if not mount.startswith("/"):
+            continue
+        try:
+            total_s = parts[1]
+            used_s = parts[2]
+            avail_s = parts[3]
+            pct_s = parts[4].rstrip("%")
+
+            def _parse_size(sz):
+                sz = sz.strip()
+                if sz.endswith("T"):
+                    return float(sz[:-1]) * 1000
+                if sz.endswith("G"):
+                    return float(sz[:-1])
+                if sz.endswith("M"):
+                    return float(sz[:-1]) / 1000
+                if sz.endswith("K"):
+                    return float(sz[:-1]) / 1_000_000
+                return float(sz) / (1024**3)
+
+            vols.append({
+                "mount": mount,
+                "total": total_s,
+                "used": used_s,
+                "avail": avail_s,
+                "pct": float(pct_s),
+                "total_gb": _parse_size(total_s),
+                "used_gb": _parse_size(used_s),
+            })
+        except (ValueError, IndexError):
+            pass
+    return vols
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  MONITOR WINDOW
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 class MonitorWindow:
-    """Full-screen system monitor panel."""
+    """Full-screen system profile with tabbed sections."""
 
     def __init__(self, ww: int, wh: int):
         self._ww = ww
         self._wh = wh
         self.visible = False
         self._quit_btn_rect: pygame.Rect | None = None
+        self._tab_rects: list[pygame.Rect] = []
+        self._active_tab = 0
 
-        # Data refresh state
-        self._last_refresh = 0.0
-        self._refresh_interval = 2.0  # seconds between data refreshes
+        # Kill-process button rects  [(rect, pid), ...]
+        self._kill_btn_rects: list[tuple[pygame.Rect, int]] = []
+
+        # Data refresh -- background thread
+        self._refresh_interval = 2.0
+        self._data_lock = threading.Lock()
+        self._worker: threading.Thread | None = None
+        self._worker_stop = threading.Event()
 
         # Live data
         self._cpu = 0.0
@@ -207,80 +342,123 @@ class MonitorWindow:
         self._disk_used = 0.0
         self._disk_total = 0.0
         self._disk_pct = 0.0
-        self._net_in = 0
-        self._net_out = 0
         self._net_in_prev = 0
         self._net_out_prev = 0
-        self._net_in_rate = 0.0   # bytes/s
+        self._net_in_rate = 0.0
         self._net_out_rate = 0.0
         self._uptime = "???"
         self._processes: list[dict] = []
         self._proc_count = 0
-        self._hostname = platform.node() or "localhost"
-        self._os_version = platform.platform(terse=True)
+        self._net_ifaces: list[dict] = []
+        self._wifi_ssid = "?"
+        self._volumes: list[dict] = []
 
-        # History for animated graphs (ring buffers)
+        # History ring buffers
         self._hist_len = 80
-        self._cpu_hist: list[float] = [0.0] * self._hist_len
-        self._mem_hist: list[float] = [0.0] * self._hist_len
-        self._net_in_hist: list[float] = [0.0] * self._hist_len
-        self._net_out_hist: list[float] = [0.0] * self._hist_len
+        self._cpu_hist = [0.0] * self._hist_len
+        self._mem_hist = [0.0] * self._hist_len
+        self._net_in_hist = [0.0] * self._hist_len
+        self._net_out_hist = [0.0] * self._hist_len
         self._hist_idx = 0
 
-        # Scroll for process list
+        # Scroll
         self._scroll_offset = 0
         self._drag_last_y: float | None = None
 
     # ── open / close ────────────────────────────────────────────────
     def open(self):
         self.visible = True
-        self._last_refresh = 0.0   # force immediate refresh
         self._scroll_offset = 0
+        self._active_tab = 0
+        self._kill_btn_rects = []
+        global _hw_cache
+        _hw_cache = None
+        # Start background worker
+        self._worker_stop.clear()
+        self._worker = threading.Thread(target=self._bg_worker, daemon=True)
+        self._worker.start()
 
     def close(self):
         self.visible = False
+        self._worker_stop.set()
+        self._worker = None
 
-    # ── data refresh ────────────────────────────────────────────────
-    def _refresh(self):
-        now = time.time()
-        if now - self._last_refresh < self._refresh_interval:
-            return
-        self._last_refresh = now
+    # ── background data worker ──────────────────────────────────────
+    def _bg_worker(self):
+        """Runs in a daemon thread – gathers data and copies it under lock."""
+        while not self._worker_stop.is_set():
+            try:
+                cpu = _cpu_percent()
+                mem_used, mem_total, mem_pct = _mem_info()
+                disk_used, disk_total, disk_pct = _disk_info()
+                uptime = _uptime_str()
+                processes = _top_processes(16)
+                proc_count = _process_count()
+                net_ifaces = _network_interfaces()
+                wifi = _wifi_ssid()
+                volumes = _volume_info()
+                nin, nout = _net_bytes()
+            except Exception:
+                # If anything blows up, just wait and retry
+                self._worker_stop.wait(self._refresh_interval)
+                continue
 
-        self._cpu = _cpu_percent()
-        self._mem_used, self._mem_total, self._mem_pct = _mem_info()
-        self._disk_used, self._disk_total, self._disk_pct = _disk_info()
-        self._uptime = _uptime_str()
-        self._processes = _top_processes(14)
-        self._proc_count = _process_count()
+            with self._data_lock:
+                self._cpu = cpu
+                self._mem_used, self._mem_total, self._mem_pct = mem_used, mem_total, mem_pct
+                self._disk_used, self._disk_total, self._disk_pct = disk_used, disk_total, disk_pct
+                self._uptime = uptime
+                self._processes = processes
+                self._proc_count = proc_count
+                self._net_ifaces = net_ifaces
+                self._wifi_ssid = wifi
+                self._volumes = volumes
 
-        # Network rate
-        nin, nout = _net_bytes()
-        if self._net_in_prev > 0:
-            dt = max(self._refresh_interval, 0.1)
-            self._net_in_rate = max(0, (nin - self._net_in_prev)) / dt
-            self._net_out_rate = max(0, (nout - self._net_out_prev)) / dt
-        self._net_in_prev, self._net_out_prev = nin, nout
+                if self._net_in_prev > 0:
+                    dt = max(self._refresh_interval, 0.1)
+                    self._net_in_rate = max(0, (nin - self._net_in_prev)) / dt
+                    self._net_out_rate = max(0, (nout - self._net_out_prev)) / dt
+                self._net_in_prev, self._net_out_prev = nin, nout
 
-        # Push to history
-        idx = self._hist_idx % self._hist_len
-        self._cpu_hist[idx] = self._cpu
-        self._mem_hist[idx] = self._mem_pct
-        self._net_in_hist[idx] = self._net_in_rate
-        self._net_out_hist[idx] = self._net_out_rate
-        self._hist_idx += 1
+                idx = self._hist_idx % self._hist_len
+                self._cpu_hist[idx] = self._cpu
+                self._mem_hist[idx] = self._mem_pct
+                self._net_in_hist[idx] = self._net_in_rate
+                self._net_out_hist[idx] = self._net_out_rate
+                self._hist_idx += 1
 
-    # ── rect ────────────────────────────────────────────────────────
+            self._worker_stop.wait(self._refresh_interval)
+
+    # ── geometry ────────────────────────────────────────────────────
     def _rect(self, s: float) -> pygame.Rect:
-        margin = int(20 * s)
-        return pygame.Rect(margin, margin, self._ww - margin * 2, self._wh - margin * 2)
+        m = int(20 * s)
+        return pygame.Rect(m, m, self._ww - m * 2, self._wh - m * 2)
 
     # ── input ───────────────────────────────────────────────────────
     def handle_tap(self, px: float, py: float, gui_scale: float = 1.0):
         if not self.visible:
             return
-        if self._quit_btn_rect and self._quit_btn_rect.collidepoint(int(px), int(py)):
+        ix, iy = int(px), int(py)
+        if self._quit_btn_rect and self._quit_btn_rect.collidepoint(ix, iy):
             self.close()
+            return
+        # Kill process buttons
+        for rect, pid in self._kill_btn_rects:
+            if rect.collidepoint(ix, iy):
+                self._kill_process(pid)
+                return
+        for i, r in enumerate(self._tab_rects):
+            if r.collidepoint(ix, iy):
+                self._active_tab = i
+                self._scroll_offset = 0
+                return
+
+    def _kill_process(self, pid: int):
+        """Send SIGTERM to the process (best-effort)."""
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
 
     def handle_scroll(self, dy: int):
         if not self.visible:
@@ -302,11 +480,47 @@ class MonitorWindow:
     def handle_pinch_drag_end(self):
         self._drag_last_y = None
 
-    # ── drawing ─────────────────────────────────────────────────────
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    #  DRAW
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     def draw(self, surface: pygame.Surface, gui_scale: float = 1.0):
         if not self.visible:
             return
-        self._refresh()
+
+        # Snapshot data from background thread under lock
+        with self._data_lock:
+            cpu = self._cpu
+            mem_used = self._mem_used
+            mem_total = self._mem_total
+            mem_pct = self._mem_pct
+            disk_used = self._disk_used
+            disk_total = self._disk_total
+            disk_pct = self._disk_pct
+            uptime = self._uptime
+            processes = list(self._processes)
+            proc_count = self._proc_count
+            net_ifaces = list(self._net_ifaces)
+            wifi_ssid = self._wifi_ssid
+            volumes = list(self._volumes)
+            net_in_rate = self._net_in_rate
+            net_out_rate = self._net_out_rate
+            cpu_hist = list(self._cpu_hist)
+            mem_hist = list(self._mem_hist)
+            net_in_hist = list(self._net_in_hist)
+            net_out_hist = list(self._net_out_hist)
+            hist_idx = self._hist_idx
+
+        snap = {
+            "cpu": cpu, "mem_used": mem_used, "mem_total": mem_total,
+            "mem_pct": mem_pct, "disk_used": disk_used, "disk_total": disk_total,
+            "disk_pct": disk_pct, "uptime": uptime, "processes": processes,
+            "proc_count": proc_count, "net_ifaces": net_ifaces,
+            "wifi_ssid": wifi_ssid, "volumes": volumes,
+            "net_in_rate": net_in_rate, "net_out_rate": net_out_rate,
+            "cpu_hist": cpu_hist, "mem_hist": mem_hist,
+            "net_in_hist": net_in_hist, "net_out_hist": net_out_hist,
+            "hist_idx": hist_idx,
+        }
 
         s = gui_scale
         p = tc.pal()
@@ -315,129 +529,490 @@ class MonitorWindow:
 
         # Background + frame
         surface.fill(_BG, win)
-        tc.draw_window_frame(surface, win, s, p)
+        if p:
+            tc.draw_window_frame(surface, win, s, p)
+        else:
+            pygame.draw.rect(surface, _PANEL, win, border_radius=int(6 * s))
+            pygame.draw.rect(surface, _DIM, win, 2, border_radius=int(6 * s))
 
         # Header
         header_h = int(50 * s)
-        tc.draw_header(surface, win, header_h, "SYSTEM MONITOR", s, p)
+        if p:
+            tc.draw_header(surface, win, header_h, "SYSTEM PROFILE", s, p)
+        else:
+            hdr = pygame.Rect(win.x, win.y, win.width, header_h)
+            pygame.draw.rect(surface, (28, 28, 44), hdr)
+            pygame.draw.line(surface, _CYAN, (win.x, win.y + header_h),
+                             (win.right, win.y + header_h), 2)
+            t = _f(int(32 * s)).render("SYSTEM PROFILE", True, _CYAN)
+            surface.blit(t, (win.x + int(14 * s), win.y + int(8 * s)))
 
-        # Footer with quit button
-        footer_h = int(60 * s)
+        # Footer
+        footer_h = int(50 * s)
         footer_y = win.bottom - footer_h
-        btn_w, btn_h = int(100 * s), int(38 * s)
+        btn_w, btn_h = int(90 * s), int(34 * s)
         quit_rect = pygame.Rect(
-            win.right - btn_w - int(18 * s),
+            win.right - btn_w - int(14 * s),
             footer_y + (footer_h - btn_h) // 2,
-            btn_w, btn_h
+            btn_w, btn_h,
         )
         self._quit_btn_rect = quit_rect
-        tc.draw_angular_button(surface, quit_rect, "QUIT", s, p, danger=True)
+        if p:
+            tc.draw_angular_button(surface, quit_rect, "QUIT", s, p, danger=True)
+        else:
+            pygame.draw.rect(surface, _RED, quit_rect, border_radius=int(4 * s))
+            ql = _f(int(18 * s)).render("QUIT", True, _WHITE)
+            surface.blit(ql, ql.get_rect(center=quit_rect.center))
 
-        # Footer info
-        info_txt = f"HOST: {self._hostname}  |  UP: {self._uptime}  |  PROCS: {self._proc_count}"
-        ft = _f(int(16 * s)).render(info_txt, True, _GRAY)
-        surface.blit(ft, (win.x + int(14 * s), footer_y + (footer_h - ft.get_height()) // 2))
+        # Footer info line
+        hw = _hardware_info()
+        info = f"{hw['hostname']}  |  UP {snap['uptime']}  |  {snap['proc_count']} procs"
+        ft = _f(int(15 * s)).render(info, True, _GRAY)
+        surface.blit(ft, (win.x + int(12 * s), footer_y + (footer_h - ft.get_height()) // 2))
 
-        # Content area
-        body_top = win.y + header_h + int(8 * s)
-        body_bottom = footer_y - int(4 * s)
-        body_h = body_bottom - body_top
+        # ── Tab bar ─────────────────────────────────────────────────
+        tab_y = win.y + header_h + int(4 * s)
+        tab_h = int(30 * s)
+        tab_w = int(win.width / _TAB_COUNT)
+        self._tab_rects = []
+        accent = p["bright"] if p else _CYAN
+        for i, name in enumerate(_TAB_NAMES):
+            tr = pygame.Rect(win.x + i * tab_w, tab_y, tab_w, tab_h)
+            self._tab_rects.append(tr)
+            active = i == self._active_tab
+            if active:
+                hl = pygame.Surface((tab_w, tab_h), pygame.SRCALPHA)
+                hl.fill((*accent, 35))
+                surface.blit(hl, tr.topleft)
+                pygame.draw.line(surface, accent, (tr.x, tr.bottom - 1),
+                                 (tr.right, tr.bottom - 1), max(1, int(2 * s)))
+            col = _WHITE if active else _DIM
+            lbl = _f(int(15 * s)).render(name, True, col)
+            surface.blit(lbl, lbl.get_rect(center=tr.center))
+        sep_y = tab_y + tab_h + int(2 * s)
+        if p:
+            tc.draw_separator(surface, win.x + int(4 * s), win.right - int(4 * s), sep_y, p)
+        else:
+            pygame.draw.line(surface, _DIM, (win.x + int(4 * s), sep_y),
+                             (win.right - int(4 * s), sep_y), 1)
 
-        # Layout: left column (gauges + graphs) | right column (process list)
-        col_gap = int(16 * s)
-        left_w = int(win.width * 0.48)
-        right_w = win.width - left_w - col_gap - int(24 * s)
-        left_x = win.x + int(12 * s)
-        right_x = left_x + left_w + col_gap
+        # ── Content area ────────────────────────────────────────────
+        body_top = tab_y + tab_h + int(8 * s)
+        body_h = footer_y - body_top - int(4 * s)
+        body_rect = pygame.Rect(win.x + int(10 * s), body_top,
+                                win.width - int(20 * s), body_h)
 
-        # ── LEFT COLUMN ────────────────────────────────────────────
-        cy = body_top + int(8 * s)
+        old_clip = surface.get_clip()
+        surface.set_clip(body_rect)
 
-        # CPU gauge
-        cy = self._draw_gauge(surface, left_x, cy, left_w, s, p, now,
-                              "CPU", self._cpu, _GREEN, _YELLOW, _RED)
+        self._kill_btn_rects = []
+        tab = self._active_tab
+        if tab == 0:
+            self._draw_overview(surface, body_rect, s, p, now, snap)
+        elif tab == 1:
+            self._draw_processes(surface, body_rect, s, p, now, snap)
+        elif tab == 2:
+            self._draw_hardware(surface, body_rect, s, p, now, snap)
+        elif tab == 3:
+            self._draw_network(surface, body_rect, s, p, now, snap)
+        elif tab == 4:
+            self._draw_storage(surface, body_rect, s, p, now, snap)
+
+        surface.set_clip(old_clip)
+
+        # Spinning activity ring
+        self._draw_spinner(surface, win.right - int(30 * s),
+                           win.y + header_h // 2, int(8 * s), s, p, now)
+
+    # ── spinner ─────────────────────────────────────────────────────
+    def _draw_spinner(self, surface, cx, cy, r, s, p, now):
+        accent = p["bright"] if p else _GREEN
+        ang = now * 4.0
+        for j in range(8):
+            a = ang + j * (math.pi / 4)
+            alpha = int(60 + 195 * ((7 - j) / 7))
+            dx = int(r * math.cos(a))
+            dy = int(r * math.sin(a))
+            dot_r = max(1, int(2 * s))
+            dot_surf = pygame.Surface((dot_r * 2, dot_r * 2), pygame.SRCALPHA)
+            pygame.draw.circle(dot_surf, (*accent[:3], alpha), (dot_r, dot_r), dot_r)
+            surface.blit(dot_surf, (cx + dx - dot_r, cy + dy - dot_r))
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    #  TAB 0 – OVERVIEW
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    def _draw_overview(self, surface, body, s, p, now, snap):
+        x, y0 = body.x + int(4 * s), body.y + int(4 * s) - self._scroll_offset
+        w = body.width - int(8 * s)
+        half = w // 2 - int(8 * s)
+        cy = y0
+
+        # ── Left column: gauges ────
+        cy = self._draw_gauge(surface, x, cy, half, s, p, now,
+                              "CPU", snap["cpu"], _GREEN, _YELLOW, _RED)
         cy += int(6 * s)
-
-        # Memory gauge
-        mem_label = f"MEM  {self._mem_used:.1f} / {self._mem_total:.1f} GB"
-        cy = self._draw_gauge(surface, left_x, cy, left_w, s, p, now,
-                              mem_label, self._mem_pct, _CYAN, _YELLOW, _RED)
+        mem_lbl = f"MEMORY  {snap['mem_used']:.1f} / {snap['mem_total']:.1f} GB"
+        cy = self._draw_gauge(surface, x, cy, half, s, p, now,
+                              mem_lbl, snap["mem_pct"], _CYAN, _YELLOW, _RED)
         cy += int(6 * s)
-
-        # Disk gauge
-        disk_label = f"DISK  {self._disk_used:.0f} / {self._disk_total:.0f} GB"
-        cy = self._draw_gauge(surface, left_x, cy, left_w, s, p, now,
-                              disk_label, self._disk_pct, _BLUE, _ORANGE, _RED)
+        dsk_lbl = f"DISK  {snap['disk_used']:.0f} / {snap['disk_total']:.0f} GB"
+        cy = self._draw_gauge(surface, x, cy, half, s, p, now,
+                              dsk_lbl, snap["disk_pct"], _BLUE, _ORANGE, _RED)
         cy += int(12 * s)
 
         # Network readout
-        cy = self._draw_net_readout(surface, left_x, cy, left_w, s, p)
+        cy = self._draw_net_readout(surface, x, cy, half, s, p, snap)
         cy += int(12 * s)
 
-        # CPU history graph
+        # CPU history
+        graph_h = int(80 * s)
+        cy = self._draw_graph(surface, x, cy, half, graph_h, s, p, now,
+                              "CPU HISTORY", snap["cpu_hist"], _GREEN, 100.0,
+                              snap["hist_idx"])
+        cy += int(8 * s)
+        # Net graph
+        max_net = max(max(snap["net_in_hist"]), max(snap["net_out_hist"]), 1024)
+        cy = self._draw_dual_graph(surface, x, cy, half, graph_h, s, p, now,
+                                   "NETWORK I/O", snap["net_in_hist"],
+                                   snap["net_out_hist"], _CYAN, _ORANGE, max_net,
+                                   snap["hist_idx"])
+
+        # ── Right column: system info cards ────
+        rx = x + half + int(16 * s)
+        ry = y0
+        rw = half
+        hw = _hardware_info()
+        ry = self._draw_info_card(surface, rx, ry, rw, s, p, now, "SYSTEM", [
+            ("Hostname", hw["hostname"]),
+            ("OS", f"macOS {hw['os_ver']}"),
+            ("Kernel", hw["kernel"]),
+            ("Uptime", snap["uptime"]),
+            ("Processes", str(snap["proc_count"])),
+        ])
+        ry += int(10 * s)
+        ry = self._draw_info_card(surface, rx, ry, rw, s, p, now, "HARDWARE", [
+            ("Chip", hw["chip"]),
+            ("GPU", hw["gpu"]),
+            ("Cores", f"{hw['cores_phys']} physical / {hw['cores_log']} logical"),
+            ("RAM", hw["ram"]),
+            ("Model", hw["model"]),
+            ("Battery", hw["battery"]),
+        ])
+        ry += int(10 * s)
+        ry = self._draw_info_card(surface, rx, ry, rw, s, p, now, "NETWORK", [
+            ("Wi-Fi SSID", snap["wifi_ssid"]),
+            ("Down", self._fmt_rate(snap["net_in_rate"])),
+            ("Up", self._fmt_rate(snap["net_out_rate"])),
+        ])
+
+        max_content = max(cy, ry) - y0
+        max_scroll = max(0, max_content - body.height)
+        self._scroll_offset = min(self._scroll_offset, max_scroll)
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    #  TAB 1 – PROCESSES
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    def _draw_processes(self, surface, body, s, p, now, snap):
+        accent = p["bright"] if p else _GREEN
+        border_col = p["btn_bdr"] if p else _DIM
+        x, y0 = body.x + int(4 * s), body.y + int(4 * s)
+        w = body.width - int(8 * s)
+
+        panel = pygame.Rect(x, y0, w, body.height - int(8 * s))
+        pygame.draw.rect(surface, _PANEL, panel, border_radius=int(4 * s))
+        pygame.draw.rect(surface, border_col, panel, 1, border_radius=int(4 * s))
+
+        # Header row
+        hdr_h = int(28 * s)
+        hdr_surf = pygame.Surface((w, hdr_h), pygame.SRCALPHA)
+        hdr_surf.fill((*accent, 20))
+        surface.blit(hdr_surf, (x, y0))
+
+        kill_col_w = int(50 * s)
+        cols = [
+            ("PID", int(55 * s)),
+            ("PROCESS", int(w - 290 * s)),
+            ("CPU%", int(65 * s)),
+            ("MEM%", int(65 * s)),
+            ("", kill_col_w),
+        ]
+        cx = x + int(8 * s)
+        hdr_font = _f(int(15 * s))
+        for col_name, col_w in cols:
+            if col_name:
+                ht = hdr_font.render(col_name, True, accent)
+                surface.blit(ht, (cx, y0 + (hdr_h - ht.get_height()) // 2))
+            cx += col_w
+
+        if p:
+            tc.draw_separator(surface, x + int(4 * s), x + w - int(4 * s), y0 + hdr_h, p)
+        else:
+            pygame.draw.line(surface, _DIM, (x + int(4 * s), y0 + hdr_h),
+                             (x + w - int(4 * s), y0 + hdr_h), 1)
+
+        # Rows
+        list_y = y0 + hdr_h + int(4 * s)
+        list_h = panel.height - hdr_h - int(8 * s)
+        row_h = int(24 * s)
+        row_font_sz = int(14 * s)
+        processes = snap["processes"]
+
+        for i, proc in enumerate(processes):
+            ry = list_y + i * row_h - self._scroll_offset
+            if ry + row_h < list_y or ry > list_y + list_h:
+                continue
+
+            if i % 2 == 0:
+                rb = pygame.Surface((w - int(8 * s), row_h), pygame.SRCALPHA)
+                rb.fill((255, 255, 255, 8))
+                surface.blit(rb, (x + int(4 * s), ry))
+
+            # CPU heat bar
+            cpu_frac = min(proc["cpu"] / 100.0, 1.0)
+            if cpu_frac > 0.01:
+                bar_col = _GREEN if proc["cpu"] < 30 else (_YELLOW if proc["cpu"] < 70 else _RED)
+                sweep_w = int((w - int(16 * s)) * cpu_frac)
+                phase = (now * 0.6 + i * 0.3) % 1.0
+                bar_alpha = int(20 + 15 * math.sin(phase * math.pi * 2))
+                bs = pygame.Surface((sweep_w, row_h), pygame.SRCALPHA)
+                bs.fill((*bar_col, bar_alpha))
+                surface.blit(bs, (x + int(8 * s), ry))
+
+            rf = _f(row_font_sz)
+            cx = x + int(8 * s)
+
+            surface.blit(rf.render(str(proc["pid"]), True, _GRAY),
+                         (cx, ry + (row_h - rf.get_height()) // 2))
+            cx += int(55 * s)
+
+            max_nw = int(w - 290 * s)
+            name = proc["name"]
+            nt = rf.render(name, True, _WHITE)
+            if nt.get_width() > max_nw:
+                while len(name) > 4 and rf.size(name + "..")[0] > max_nw:
+                    name = name[:-1]
+                nt = rf.render(name + "..", True, _WHITE)
+            surface.blit(nt, (cx, ry + (row_h - nt.get_height()) // 2))
+            cx += max_nw
+
+            cc = _GREEN if proc["cpu"] < 30 else (_YELLOW if proc["cpu"] < 70 else _RED)
+            surface.blit(rf.render(f"{proc['cpu']:.1f}", True, cc),
+                         (cx, ry + (row_h - rf.get_height()) // 2))
+            cx += int(65 * s)
+
+            mc = _CYAN if proc["mem"] < 10 else (_YELLOW if proc["mem"] < 30 else _RED)
+            surface.blit(rf.render(f"{proc['mem']:.1f}", True, mc),
+                         (cx, ry + (row_h - rf.get_height()) // 2))
+            cx += int(65 * s)
+
+            # Kill button
+            kill_w = int(38 * s)
+            kill_h = int(18 * s)
+            kill_rect = pygame.Rect(cx, ry + (row_h - kill_h) // 2, kill_w, kill_h)
+            pygame.draw.rect(surface, _RED, kill_rect, border_radius=int(3 * s))
+            kt = _f(int(11 * s)).render("KILL", True, _WHITE)
+            surface.blit(kt, kt.get_rect(center=kill_rect.center))
+            self._kill_btn_rects.append((kill_rect, proc["pid"]))
+
+        # Scrollbar
+        max_scroll = max(0, len(processes) * row_h - list_h)
+        if max_scroll > 0:
+            self._scroll_offset = min(self._scroll_offset, max_scroll)
+            thumb_frac = list_h / (len(processes) * row_h)
+            thumb_pos = self._scroll_offset / max_scroll
+            sb = pygame.Rect(x + w - int(8 * s), list_y, int(5 * s), list_h)
+            if p:
+                tc.draw_scrollbar(surface, sb, thumb_frac, thumb_pos, s, p)
+            else:
+                # Simple scrollbar fallback
+                th = max(int(list_h * thumb_frac), 10)
+                ty = list_y + int((list_h - th) * thumb_pos)
+                pygame.draw.rect(surface, _DIM, sb, border_radius=2)
+                pygame.draw.rect(surface, _GRAY, pygame.Rect(sb.x, ty, sb.width, th),
+                                 border_radius=2)
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    #  TAB 2 – HARDWARE
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    def _draw_hardware(self, surface, body, s, p, now, snap):
+        hw = _hardware_info()
+        x = body.x + int(4 * s)
+        y0 = body.y + int(4 * s) - self._scroll_offset
+        w = body.width - int(8 * s)
+        half = w // 2 - int(8 * s)
+
+        cy = self._draw_info_card(surface, x, y0, half, s, p, now, "PROCESSOR", [
+            ("Chip", hw["chip"]),
+            ("Architecture", hw["arch"]),
+            ("Physical Cores", hw["cores_phys"]),
+            ("Logical Cores", hw["cores_log"]),
+            ("Current Load", f"{snap['cpu']:.1f}%"),
+        ])
+        cy += int(10 * s)
+        cy = self._draw_info_card(surface, x, cy, half, s, p, now, "GRAPHICS", [
+            ("GPU", hw["gpu"]),
+            ("Display", hw["display"]),
+        ])
+        cy += int(10 * s)
+        cy = self._draw_info_card(surface, x, cy, half, s, p, now, "POWER", [
+            ("Battery", hw["battery"]),
+        ])
+
+        rx = x + half + int(16 * s)
+        ry = y0
+        ry = self._draw_info_card(surface, rx, ry, half, s, p, now, "MEMORY", [
+            ("Total RAM", hw["ram"]),
+            ("Used", f"{snap['mem_used']:.1f} GB"),
+            ("Usage", f"{snap['mem_pct']:.1f}%"),
+        ])
+        ry += int(10 * s)
+        ry = self._draw_info_card(surface, rx, ry, half, s, p, now, "SYSTEM", [
+            ("Model", hw["model"]),
+            ("Serial", hw["serial"]),
+            ("macOS", hw["os_ver"]),
+            ("Kernel", hw["kernel"]),
+            ("Hostname", hw["hostname"]),
+        ])
+        ry += int(10 * s)
+        ry = self._draw_info_card(surface, rx, ry, half, s, p, now, "STORAGE", [
+            ("Main Disk", f"{snap['disk_used']:.0f} / {snap['disk_total']:.0f} GB"),
+            ("Usage", f"{snap['disk_pct']:.1f}%"),
+        ])
+
+        max_content = max(cy, ry) - (y0 + self._scroll_offset)
+        max_scroll = max(0, max_content - body.height)
+        self._scroll_offset = min(self._scroll_offset, max_scroll)
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    #  TAB 3 – NETWORK
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    def _draw_network(self, surface, body, s, p, now, snap):
+        x = body.x + int(4 * s)
+        y0 = body.y + int(4 * s) - self._scroll_offset
+        w = body.width - int(8 * s)
+        half = w // 2 - int(8 * s)
+        cy = y0
+
+        cy = self._draw_net_readout(surface, x, cy, half, s, p, snap)
+        cy += int(10 * s)
         graph_h = int(90 * s)
-        remaining = body_bottom - cy - int(8 * s)
-        if remaining > graph_h * 2 + int(30 * s):
-            cy = self._draw_graph(surface, left_x, cy, left_w, graph_h, s, p, now,
-                                  "CPU HISTORY", self._cpu_hist, _GREEN, 100.0)
+        max_net = max(max(snap["net_in_hist"]), max(snap["net_out_hist"]), 1024)
+        cy = self._draw_dual_graph(surface, x, cy, half, graph_h, s, p, now,
+                                   "THROUGHPUT", snap["net_in_hist"],
+                                   snap["net_out_hist"], _CYAN, _ORANGE, max_net,
+                                   snap["hist_idx"])
+        cy += int(10 * s)
+        cy = self._draw_info_card(surface, x, cy, half, s, p, now, "WI-FI", [
+            ("SSID", snap["wifi_ssid"]),
+        ])
+
+        rx = x + half + int(16 * s)
+        ry = y0
+        for iface in snap["net_ifaces"][:6]:
+            rows = [("Status", iface.get("status", "?"))]
+            if iface.get("mac"):
+                rows.append(("MAC", iface["mac"]))
+            for ip in iface.get("ips", []):
+                rows.append(("IP", ip))
+            ry = self._draw_info_card(surface, rx, ry, half, s, p, now,
+                                      iface["name"].upper(), rows)
+            ry += int(8 * s)
+
+        max_content = max(cy, ry) - (y0 + self._scroll_offset)
+        max_scroll = max(0, max_content - body.height)
+        self._scroll_offset = min(self._scroll_offset, max_scroll)
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    #  TAB 4 – STORAGE
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    def _draw_storage(self, surface, body, s, p, now, snap):
+        x = body.x + int(4 * s)
+        y0 = body.y + int(4 * s) - self._scroll_offset
+        w = body.width - int(8 * s)
+        cy = y0
+
+        for vol in snap["volumes"]:
+            pct = vol["pct"]
+            label = f"{vol['mount']}   {vol['used']} / {vol['total']}  ({pct:.0f}%)"
+            cy = self._draw_gauge(surface, x, cy, w, s, p, now,
+                                  label, pct, _BLUE, _ORANGE, _RED)
             cy += int(10 * s)
-            # Net graph
-            max_net = max(max(self._net_in_hist), max(self._net_out_hist), 1024)
-            cy = self._draw_dual_graph(surface, left_x, cy, left_w, graph_h, s, p, now,
-                                       "NETWORK", self._net_in_hist, self._net_out_hist,
-                                       _CYAN, _ORANGE, max_net)
-        elif remaining > graph_h + int(10 * s):
-            cy = self._draw_graph(surface, left_x, cy, left_w, graph_h, s, p, now,
-                                  "CPU HISTORY", self._cpu_hist, _GREEN, 100.0)
 
-        # ── RIGHT COLUMN ── process list ────────────────────────────
-        self._draw_process_list(surface, right_x, body_top + int(8 * s),
-                                right_w, body_h - int(16 * s), s, p, now)
+        if not snap["volumes"]:
+            t = _f(int(16 * s)).render("No volumes found", True, _DIM)
+            surface.blit(t, (x, cy))
+            cy += int(30 * s)
 
-    # ── gauge bar ───────────────────────────────────────────────────
+        max_content = cy - (y0 + self._scroll_offset)
+        max_scroll = max(0, max_content - body.height)
+        self._scroll_offset = min(self._scroll_offset, max_scroll)
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    #  REUSABLE DRAWING PRIMITIVES
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    def _draw_info_card(self, surface, x, y, w, s, p, now, title, rows) -> int:
+        accent = p["bright"] if p else _CYAN
+        border = p["btn_bdr"] if p else _DIM
+        row_h = int(22 * s)
+        title_h = int(26 * s)
+        card_h = title_h + len(rows) * row_h + int(8 * s)
+        r = pygame.Rect(x, y, w, card_h)
+        pygame.draw.rect(surface, _PANEL, r, border_radius=int(4 * s))
+        pygame.draw.rect(surface, border, r, 1, border_radius=int(4 * s))
+
+        th = pygame.Surface((w, title_h), pygame.SRCALPHA)
+        pulse = 0.6 + 0.4 * (0.5 + 0.5 * math.sin(now * 1.5))
+        th.fill((*accent, int(18 * pulse)))
+        surface.blit(th, (x, y))
+        t = _f(int(15 * s)).render(title, True, accent)
+        surface.blit(t, (x + int(8 * s), y + (title_h - t.get_height()) // 2))
+
+        cy = y + title_h + int(2 * s)
+        for label, value in rows:
+            lbl = _f(int(14 * s)).render(f"{label}:", True, _GRAY)
+            val = _f(int(14 * s)).render(str(value), True, _WHITE)
+            surface.blit(lbl, (x + int(10 * s), cy + (row_h - lbl.get_height()) // 2))
+            vx = x + int(w * 0.42)
+            # Truncate value if too wide
+            max_vw = w - int(w * 0.42) - int(10 * s)
+            if val.get_width() > max_vw:
+                vtxt = str(value)
+                while len(vtxt) > 4 and _f(int(14 * s)).size(vtxt + "..")[0] > max_vw:
+                    vtxt = vtxt[:-1]
+                val = _f(int(14 * s)).render(vtxt + "..", True, _WHITE)
+            surface.blit(val, (vx, cy + (row_h - val.get_height()) // 2))
+            cy += row_h
+
+        return y + card_h
+
     def _draw_gauge(self, surface, x, y, w, s, p, now, label, pct,
                     col_low, col_mid, col_hi) -> int:
         h = int(38 * s)
         bar_h = int(14 * s)
         label_h = int(18 * s)
-
-        # Choose colour
-        if pct > 85:
-            col = col_hi
-        elif pct > 60:
-            col = col_mid
-        else:
-            col = col_low
-
-        # Label
+        col = col_hi if pct > 85 else (col_mid if pct > 60 else col_low)
         accent = p["bright"] if p else col
+
         ft = _f(int(16 * s)).render(f"{label}  {pct:.1f}%", True, accent)
         surface.blit(ft, (x, y))
 
-        # Bar background
         bar_y = y + label_h + int(2 * s)
         bar_rect = pygame.Rect(x, bar_y, w, bar_h)
         pygame.draw.rect(surface, _PANEL, bar_rect, border_radius=int(3 * s))
         pygame.draw.rect(surface, _DIM, bar_rect, 1, border_radius=int(3 * s))
 
-        # Filled portion with animated pulse glow
         fill_w = int(w * min(pct, 100.0) / 100.0)
         if fill_w > 0:
-            fill_rect = pygame.Rect(x, bar_y, fill_w, bar_h)
-            pygame.draw.rect(surface, col, fill_rect, border_radius=int(3 * s))
-            # Pulsing shine
+            fr = pygame.Rect(x, bar_y, fill_w, bar_h)
+            pygame.draw.rect(surface, col, fr, border_radius=int(3 * s))
             pulse = 0.3 + 0.7 * (0.5 + 0.5 * math.sin(now * 3 + pct * 0.1))
-            shine_col = tuple(min(255, int(c + 60 * pulse)) for c in col)
-            shine_rect = pygame.Rect(x, bar_y, fill_w, bar_h // 2)
-            sh_surf = pygame.Surface((shine_rect.w, shine_rect.h), pygame.SRCALPHA)
-            sh_surf.fill((*shine_col, int(45 * pulse)))
-            surface.blit(sh_surf, shine_rect.topleft)
-
-            # Animated moving highlight stripe
+            shine = tuple(min(255, int(c + 60 * pulse)) for c in col)
+            sh = pygame.Surface((fill_w, bar_h // 2), pygame.SRCALPHA)
+            sh.fill((*shine, int(45 * pulse)))
+            surface.blit(sh, (x, bar_y))
             stripe_x = x + int((now * 80 * s) % max(1, fill_w))
-            stripe_w = int(18 * s)
-            sr = pygame.Rect(stripe_x, bar_y + 1, stripe_w, bar_h - 2)
-            sr = sr.clip(fill_rect)
+            sr = pygame.Rect(stripe_x, bar_y + 1, int(18 * s), bar_h - 2).clip(fr)
             if sr.width > 0:
                 ss = pygame.Surface((sr.w, sr.h), pygame.SRCALPHA)
                 ss.fill((*_WHITE, 30))
@@ -445,53 +1020,46 @@ class MonitorWindow:
 
         return y + h
 
-    # ── network readout ─────────────────────────────────────────────
-    def _draw_net_readout(self, surface, x, y, w, s, p) -> int:
+    def _draw_net_readout(self, surface, x, y, w, s, p, snap) -> int:
         accent = p["bright"] if p else _CYAN
-        # Format rates
-        def fmt(bps):
-            if bps > 1_000_000:
-                return f"{bps / 1_000_000:.1f} MB/s"
-            elif bps > 1_000:
-                return f"{bps / 1_000:.0f} KB/s"
-            return f"{bps:.0f} B/s"
-
         h = int(38 * s)
         lbl = _f(int(16 * s)).render("NETWORK", True, accent)
         surface.blit(lbl, (x, y))
-
-        in_txt = _f(int(15 * s)).render(f"IN  {fmt(self._net_in_rate)}", True, _CYAN)
-        out_txt = _f(int(15 * s)).render(f"OUT {fmt(self._net_out_rate)}", True, _ORANGE)
-        surface.blit(in_txt, (x + int(4 * s), y + int(18 * s)))
-        surface.blit(out_txt, (x + w // 2, y + int(18 * s)))
+        it = _f(int(15 * s)).render(f"DOWN  {self._fmt_rate(snap['net_in_rate'])}", True, _CYAN)
+        ot = _f(int(15 * s)).render(f"UP   {self._fmt_rate(snap['net_out_rate'])}", True, _ORANGE)
+        surface.blit(it, (x + int(4 * s), y + int(18 * s)))
+        surface.blit(ot, (x + w // 2, y + int(18 * s)))
         return y + h
 
-    # ── animated line graph ─────────────────────────────────────────
+    @staticmethod
+    def _fmt_rate(bps: float) -> str:
+        if bps > 1_000_000:
+            return f"{bps / 1_000_000:.1f} MB/s"
+        if bps > 1_000:
+            return f"{bps / 1_000:.0f} KB/s"
+        return f"{bps:.0f} B/s"
+
     def _draw_graph(self, surface, x, y, w, h, s, p, now,
-                    label, history, color, max_val) -> int:
+                    label, history, color, max_val, hist_idx) -> int:
         accent = p["bright"] if p else color
         panel = pygame.Rect(x, y, w, h + int(20 * s))
         pygame.draw.rect(surface, _PANEL, panel, border_radius=int(4 * s))
         pygame.draw.rect(surface, _DIM, panel, 1, border_radius=int(4 * s))
 
-        # Label
         ft = _f(int(14 * s)).render(label, True, accent)
         surface.blit(ft, (x + int(6 * s), y + int(3 * s)))
 
-        # Graph area
         gx = x + int(4 * s)
         gy = y + int(18 * s)
         gw = w - int(8 * s)
         gh = h - int(4 * s)
 
-        # Grid lines
         for i in range(1, 4):
             ly = gy + int(gh * i / 4)
-            pygame.draw.line(surface, (*_DIM[:3],), (gx, ly), (gx + gw, ly), 1)
+            pygame.draw.line(surface, _DIM, (gx, ly), (gx + gw, ly), 1)
 
-        # Build points from ring buffer
         n = len(history)
-        idx = self._hist_idx % n
+        idx = hist_idx % n
         points = []
         for i in range(n):
             val = history[(idx + i) % n]
@@ -500,18 +1068,13 @@ class MonitorWindow:
             points.append((fx, fy))
 
         if len(points) >= 2:
-            # Filled area under curve
             fill_pts = list(points) + [(points[-1][0], gy + gh), (points[0][0], gy + gh)]
-            fill_surf = pygame.Surface((gw + int(8 * s), gh + 2), pygame.SRCALPHA)
+            fs = pygame.Surface((gw + int(8 * s), gh + 2), pygame.SRCALPHA)
             shifted = [(px2 - gx + int(4 * s), py2 - gy) for px2, py2 in fill_pts]
             if len(shifted) >= 3:
-                pygame.draw.polygon(fill_surf, (*color, 35), shifted)
-                surface.blit(fill_surf, (gx - int(4 * s), gy))
-
-            # Line
+                pygame.draw.polygon(fs, (*color, 35), shifted)
+                surface.blit(fs, (gx - int(4 * s), gy))
             pygame.draw.lines(surface, color, False, points, max(1, int(2 * s)))
-
-            # Animated dot on latest point
             latest = points[-1]
             pulse = 0.5 + 0.5 * math.sin(now * 5)
             r = int((3 + 2 * pulse) * s)
@@ -522,9 +1085,9 @@ class MonitorWindow:
 
         return y + h + int(22 * s)
 
-    # ── dual graph (net in/out) ─────────────────────────────────────
     def _draw_dual_graph(self, surface, x, y, w, h, s, p, now,
-                         label, hist_a, hist_b, col_a, col_b, max_val) -> int:
+                         label, hist_a, hist_b, col_a, col_b, max_val,
+                         hist_idx) -> int:
         accent = p["bright"] if p else col_a
         panel = pygame.Rect(x, y, w, h + int(20 * s))
         pygame.draw.rect(surface, _PANEL, panel, border_radius=int(4 * s))
@@ -532,13 +1095,10 @@ class MonitorWindow:
 
         ft = _f(int(14 * s)).render(label, True, accent)
         surface.blit(ft, (x + int(6 * s), y + int(3 * s)))
-
-        # Legend
-        leg_y = y + int(3 * s)
-        leg_in = _f(int(12 * s)).render("IN", True, col_a)
-        leg_out = _f(int(12 * s)).render("OUT", True, col_b)
-        surface.blit(leg_in, (x + w - int(60 * s), leg_y))
-        surface.blit(leg_out, (x + w - int(30 * s), leg_y))
+        surface.blit(_f(int(12 * s)).render("IN", True, col_a),
+                     (x + w - int(60 * s), y + int(3 * s)))
+        surface.blit(_f(int(12 * s)).render("OUT", True, col_b),
+                     (x + w - int(30 * s), y + int(3 * s)))
 
         gx = x + int(4 * s)
         gy = y + int(18 * s)
@@ -550,7 +1110,7 @@ class MonitorWindow:
             pygame.draw.line(surface, _DIM, (gx, ly), (gx + gw, ly), 1)
 
         n = len(hist_a)
-        idx = self._hist_idx % n
+        idx = hist_idx % n
         for hist, col in [(hist_a, col_a), (hist_b, col_b)]:
             points = []
             for i in range(n):
@@ -559,140 +1119,16 @@ class MonitorWindow:
                 fy = gy + gh - int(gh * min(val, max_val) / max(1, max_val))
                 points.append((fx, fy))
             if len(points) >= 2:
-                fill_pts = list(points) + [(points[-1][0], gy + gh), (points[0][0], gy + gh)]
-                fill_surf = pygame.Surface((gw + int(8 * s), gh + 2), pygame.SRCALPHA)
+                fill_pts = list(points) + [(points[-1][0], gy + gh),
+                                           (points[0][0], gy + gh)]
+                fs = pygame.Surface((gw + int(8 * s), gh + 2), pygame.SRCALPHA)
                 shifted = [(px2 - gx + int(4 * s), py2 - gy) for px2, py2 in fill_pts]
                 if len(shifted) >= 3:
-                    pygame.draw.polygon(fill_surf, (*col, 25), shifted)
-                    surface.blit(fill_surf, (gx - int(4 * s), gy))
+                    pygame.draw.polygon(fs, (*col, 25), shifted)
+                    surface.blit(fs, (gx - int(4 * s), gy))
                 pygame.draw.lines(surface, col, False, points, max(1, int(2 * s)))
-                # Dot
                 pulse = 0.5 + 0.5 * math.sin(now * 5)
                 r = int((3 + 2 * pulse) * s)
                 pygame.draw.circle(surface, col, points[-1], r)
 
         return y + h + int(22 * s)
-
-    # ── process list ────────────────────────────────────────────────
-    def _draw_process_list(self, surface, x, y, w, total_h, s, p, now):
-        accent = p["bright"] if p else _GREEN
-        border_col = p["btn_bdr"] if p else _DIM
-
-        # Panel background
-        panel = pygame.Rect(x, y, w, total_h)
-        pygame.draw.rect(surface, _PANEL, panel, border_radius=int(4 * s))
-        pygame.draw.rect(surface, border_col, panel, 1, border_radius=int(4 * s))
-
-        # Header row
-        hdr_h = int(28 * s)
-        hdr_rect = pygame.Rect(x, y, w, hdr_h)
-        hdr_surf = pygame.Surface((w, hdr_h), pygame.SRCALPHA)
-        hdr_surf.fill((*accent, 20))
-        surface.blit(hdr_surf, (x, y))
-
-        row_font_sz = int(14 * s)
-        hdr_font = _f(int(15 * s))
-
-        # Columns: PID  NAME  CPU%  MEM%
-        cols = [
-            ("PID", int(50 * s)),
-            ("PROCESS", int(w - 200 * s)),
-            ("CPU%", int(60 * s)),
-            ("MEM%", int(60 * s)),
-        ]
-        cx = x + int(8 * s)
-        for col_name, col_w in cols:
-            ht = hdr_font.render(col_name, True, accent)
-            surface.blit(ht, (cx, y + (hdr_h - ht.get_height()) // 2))
-            cx += col_w
-
-        tc.draw_separator(surface, x + int(4 * s), x + w - int(4 * s), y + hdr_h, p)
-
-        # Process rows (clipped)
-        list_y = y + hdr_h + int(4 * s)
-        list_h = total_h - hdr_h - int(8 * s)
-        row_h = int(24 * s)
-        clip = pygame.Rect(x, list_y, w, list_h)
-        old_clip = surface.get_clip()
-        surface.set_clip(clip)
-
-        for i, proc in enumerate(self._processes):
-            ry = list_y + i * row_h - self._scroll_offset
-            if ry + row_h < list_y or ry > list_y + list_h:
-                continue
-
-            # Alternating row tint
-            if i % 2 == 0:
-                row_bg = pygame.Surface((w - int(8 * s), row_h), pygame.SRCALPHA)
-                row_bg.fill((255, 255, 255, 8))
-                surface.blit(row_bg, (x + int(4 * s), ry))
-
-            # Animated CPU activity bar behind process name
-            cpu_frac = min(proc["cpu"] / 100.0, 1.0)
-            if cpu_frac > 0.01:
-                bar_col = _GREEN if proc["cpu"] < 30 else (_YELLOW if proc["cpu"] < 70 else _RED)
-                # Sweep animation
-                sweep_w = int((w - int(16 * s)) * cpu_frac)
-                sweep_phase = (now * 0.6 + i * 0.3) % 1.0
-                bar_alpha = int(20 + 15 * math.sin(sweep_phase * math.pi * 2))
-                bar_surf = pygame.Surface((sweep_w, row_h), pygame.SRCALPHA)
-                bar_surf.fill((*bar_col, bar_alpha))
-                surface.blit(bar_surf, (x + int(8 * s), ry))
-
-            rf = _f(row_font_sz)
-            cx = x + int(8 * s)
-
-            # PID
-            pid_txt = rf.render(str(proc["pid"]), True, _GRAY)
-            surface.blit(pid_txt, (cx, ry + (row_h - pid_txt.get_height()) // 2))
-            cx += int(50 * s)
-
-            # Name (truncate)
-            max_name_w = int(w - 200 * s)
-            name = proc["name"]
-            name_txt = rf.render(name, True, _WHITE)
-            if name_txt.get_width() > max_name_w:
-                while len(name) > 4 and rf.size(name + "..")[0] > max_name_w:
-                    name = name[:-1]
-                name_txt = rf.render(name + "..", True, _WHITE)
-            surface.blit(name_txt, (cx, ry + (row_h - name_txt.get_height()) // 2))
-            cx += max_name_w
-
-            # CPU%
-            cpu_col = _GREEN if proc["cpu"] < 30 else (_YELLOW if proc["cpu"] < 70 else _RED)
-            cpu_txt = rf.render(f"{proc['cpu']:.1f}", True, cpu_col)
-            surface.blit(cpu_txt, (cx, ry + (row_h - cpu_txt.get_height()) // 2))
-            cx += int(60 * s)
-
-            # MEM%
-            mem_col = _CYAN if proc["mem"] < 10 else (_YELLOW if proc["mem"] < 30 else _RED)
-            mem_txt = rf.render(f"{proc['mem']:.1f}", True, mem_col)
-            surface.blit(mem_txt, (cx, ry + (row_h - mem_txt.get_height()) // 2))
-
-        surface.set_clip(old_clip)
-
-        # Scrollbar if needed
-        max_scroll = max(0, len(self._processes) * row_h - list_h)
-        if max_scroll > 0:
-            self._scroll_offset = min(self._scroll_offset, max_scroll)
-            thumb_frac = list_h / (len(self._processes) * row_h)
-            thumb_pos = self._scroll_offset / max_scroll if max_scroll else 0
-            sb_rect = pygame.Rect(x + w - int(8 * s), list_y, int(5 * s), list_h)
-            tc.draw_scrollbar(surface, sb_rect, thumb_frac, thumb_pos, s, p)
-
-        # Spinning activity indicator (animated ring)
-        ring_cx = x + w - int(20 * s)
-        ring_cy = y + hdr_h // 2
-        ring_r = int(7 * s)
-        ang = now * 4.0
-        for j in range(8):
-            a = ang + j * (math.pi / 4)
-            alpha = int(60 + 195 * ((7 - j) / 7))
-            dx2 = int(ring_r * math.cos(a))
-            dy2 = int(ring_r * math.sin(a))
-            dot_col = (*accent[:3], alpha) if len(accent) >= 3 else (*_GREEN, alpha)
-            dot_surf = pygame.Surface((int(4 * s), int(4 * s)), pygame.SRCALPHA)
-            pygame.draw.circle(dot_surf, dot_col,
-                               (int(2 * s), int(2 * s)), int(2 * s))
-            surface.blit(dot_surf, (ring_cx + dx2 - int(2 * s),
-                                     ring_cy + dy2 - int(2 * s)))

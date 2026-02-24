@@ -18,7 +18,7 @@ from state import (
 )
 from renderer import (clamp, draw_cards, draw_wheel, draw_camera_thumbnail,
                       draw_theme_button, theme_button_hit, toggle_theme, get_bg_color,
-                      draw_helix_graph, is_ice_theme)
+                      draw_helix_graph, is_ice_theme, draw_stars_bg)
 from weather_window import WeatherWindow
 from todo_window import TodoWindow
 from sand_window import SandWindow
@@ -63,7 +63,6 @@ class App:
         self.tracker = HandTracker()
         self._font_status = pygame.font.Font(None, 48)
         self._tap = None
-        self._double_tap = None
         self._hand_lost_time = 0          # timestamp when hand was last lost
         self._hand_grace_period = 0.30    # seconds to keep state alive after losing tracking
         self._last_hand = None            # last valid hand landmarks
@@ -209,19 +208,13 @@ class App:
                     st.last_pinch_x - st.pinch_start_pos[0],
                     st.last_pinch_y - st.pinch_start_pos[1],
                 )
-                now = time.time()
-                dt = now - st.last_pinch_time
                 if total <= st.movement_threshold and not st.scroll_unlocked:
                     # Sand buttons were already handled on pinch-down
                     if self._sand.visible and getattr(st, '_sand_btn_consumed', False):
                         pass  # don't double-fire
                     else:
                         self._tap = st.pinch_start_pos
-                    # Double-pinch detection (disabled in Sand)
-                    if not self._sand.visible:
-                        if 0.05 < dt < st.double_pinch_window:
-                            self._double_tap = st.pinch_start_pos
-                st.last_pinch_time = now
+                st.last_pinch_time = time.time()
             st.reset_pinch()
             # Also end sand pinch tracking
             if self._sand.visible:
@@ -287,29 +280,13 @@ class App:
                             print("Opened System Monitor")
                         break
             self._tap = None
-        if self._double_tap:
-            dx, dy = self._double_tap
-            if self._todo.visible:
-                if not self._todo._keyboard_open:
-                    self._todo.close()
-                    print("Closed todo window (double pinch)")
-            elif self._weather.visible:
-                self._weather.close()
-                print("Closed weather window (double pinch)")
-            elif self._files.visible:
-                # Double-pinch opens folders; if not on a folder, close explorer
-                if not self._files.handle_double_tap(dx, dy, st.gui_scale):
-                    self._files.close()
-                    print("Closed file explorer (double pinch)")
-            elif self._monitor.visible:
-                self._monitor.close()
-                print("Closed system monitor (double pinch)")
-            self._double_tap = None
 
     def _draw(self, hand, pinch_now):
         st = self.state
         screen = self.screen
         screen.fill(get_bg_color())
+        # Subtle drifting stars on classic theme
+        draw_stars_bg(screen)
 
         # Delta-time for frame-rate independent smoothing
         now = time.time()
@@ -460,10 +437,6 @@ class App:
                                     # Double-click = line tool
                                     if now - self._mouse_last_click_time < 0.4:
                                         self._sand.handle_double_click(mx, my)
-                                elif self._files.visible:
-                                    # Double-click = open folder
-                                    if now - self._mouse_last_click_time < 0.4:
-                                        self._files.handle_double_tap(mx, my, self.state.gui_scale)
                                 self._mouse_last_click_time = now
                         if self._sand.visible:
                             self._sand.handle_pinch_end()

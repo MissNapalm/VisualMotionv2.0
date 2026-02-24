@@ -64,6 +64,61 @@ def get_bg_color():
 
 
 # ==============================
+# Subtle drifting stars (classic theme)
+# ==============================
+import random as _star_rand
+
+_stars: list | None = None
+_STAR_COUNT = 120
+
+
+def _init_stars(w: int, h: int):
+    """Create a field of tiny stars with random positions, brightness, and drift speed."""
+    global _stars
+    _stars = []
+    for _ in range(_STAR_COUNT):
+        _stars.append({
+            "x": _star_rand.random() * w,
+            "y": _star_rand.random() * h,
+            "b": _star_rand.randint(25, 70),        # base brightness (very dim)
+            "s": _star_rand.uniform(0.04, 0.25),     # drift speed px/frame
+            "r": _star_rand.uniform(0.5, 1.5),       # radius
+            "tw": _star_rand.uniform(0.002, 0.008),  # twinkle speed
+            "tp": _star_rand.random() * 6.28,        # twinkle phase
+        })
+
+import time as _star_time
+
+def draw_stars_bg(surface):
+    """Draw very subtle drifting stars on the classic theme.
+       Returns True if drawn, False otherwise."""
+    if _theme_id != _THEME_CLASSIC:
+        return False
+    w, h = surface.get_size()
+    if _stars is None:
+        _init_stars(w, h)
+    t = _star_time.time()
+    for s in _stars:
+        # Slow horizontal drift
+        s["x"] -= s["s"]
+        if s["x"] < -2:
+            s["x"] = w + 2
+            s["y"] = _star_rand.random() * h
+        # Gentle twinkle
+        import math as _m
+        flicker = _m.sin(t * 60.0 * s["tw"] + s["tp"]) * 0.3 + 0.7
+        bright = int(s["b"] * flicker)
+        bright = max(10, min(bright, 80))
+        c = (bright, bright, bright + 8)  # very slight blue tint
+        r = s["r"]
+        if r < 1.0:
+            surface.set_at((int(s["x"]), int(s["y"])), c)
+        else:
+            pygame.draw.circle(surface, c, (int(s["x"]), int(s["y"])), int(r))
+    return True
+
+
+# ==============================
 # Theme toggle button (top-left)
 # ==============================
 _THEME_BTN_W = 90
@@ -110,9 +165,145 @@ def theme_button_hit(px, py):
 
 
 # ==============================
-# Animated double-helix "graph" (bottom-left, ice theme only)
+# Cybernetic background grid
 # ==============================
 import time as _time
+import random as _random
+
+# Pre-generate the circuit layout once so it doesn't shift every frame.
+# Each "trace" is a path of horizontal/vertical segments with occasional junctions.
+_cyber_traces: list | None = None
+_cyber_nodes: list | None = None
+_cyber_seed_w = 0
+_cyber_seed_h = 0
+_cyber_pulse_t0 = 0.0
+
+
+def _generate_cyber_layout(win_w, win_h):
+    """Build a set of circuit-board-style traces and junction nodes."""
+    global _cyber_traces, _cyber_nodes, _cyber_seed_w, _cyber_seed_h, _cyber_pulse_t0
+    _cyber_seed_w = win_w
+    _cyber_seed_h = win_h
+    _cyber_pulse_t0 = _time.time()
+    rng = _random.Random(42)  # deterministic so layout is stable
+
+    traces = []
+    nodes = []
+
+    # Horizontal main bus lines
+    for i in range(6):
+        y = int(win_h * (0.08 + i * 0.16))
+        x0 = rng.randint(20, win_w // 4)
+        x1 = rng.randint(win_w * 3 // 4, win_w - 20)
+        traces.append(("h", x0, y, x1, y, rng.uniform(0.3, 1.0)))
+
+        # Branch stubs dropping down or up from the bus
+        num_branches = rng.randint(2, 5)
+        for _ in range(num_branches):
+            bx = rng.randint(x0 + 30, x1 - 30)
+            direction = rng.choice([-1, 1])
+            blen = rng.randint(30, 120)
+            by2 = y + direction * blen
+            traces.append(("v", bx, y, bx, by2, rng.uniform(0.2, 0.8)))
+            # Sometimes add a horizontal stub at the end of the branch
+            if rng.random() < 0.5:
+                stub_dir = rng.choice([-1, 1])
+                stub_len = rng.randint(20, 80)
+                sx2 = bx + stub_dir * stub_len
+                traces.append(("h", bx, by2, sx2, by2, rng.uniform(0.15, 0.6)))
+                # Junction dot at the corner
+                nodes.append((bx, by2, rng.uniform(0.2, 0.7)))
+            # Junction dot where branch meets bus
+            nodes.append((bx, y, rng.uniform(0.3, 0.9)))
+
+    # Vertical risers
+    for i in range(4):
+        x = int(win_w * (0.15 + i * 0.22))
+        y0 = rng.randint(20, win_h // 3)
+        y1 = rng.randint(win_h * 2 // 3, win_h - 20)
+        traces.append(("v", x, y0, x, y1, rng.uniform(0.2, 0.7)))
+        # Small horizontal ticks along the riser
+        num_ticks = rng.randint(3, 7)
+        for _ in range(num_ticks):
+            ty = rng.randint(y0 + 10, y1 - 10)
+            td = rng.choice([-1, 1])
+            tl = rng.randint(8, 40)
+            traces.append(("h", x, ty, x + td * tl, ty, rng.uniform(0.1, 0.4)))
+
+    _cyber_traces = traces
+    _cyber_nodes = nodes
+
+
+def draw_cyber_grid(surface, win_w, win_h):
+    """Draw subtle animated cybernetic circuit lines behind everything."""
+    global _cyber_traces, _cyber_nodes
+
+    # Regenerate layout if screen size changed or first call
+    if _cyber_traces is None or _cyber_seed_w != win_w or _cyber_seed_h != win_h:
+        _generate_cyber_layout(win_w, win_h)
+
+    now = _time.time()
+    elapsed = now - _cyber_pulse_t0
+
+    # Theme-aware colors
+    if _theme_id == _THEME_SCIFI:
+        base_color = (0, 180, 160)     # teal / cyan
+        node_color = (0, 220, 200)
+        pulse_color = (0, 255, 230)
+        base_alpha = 18
+        node_alpha = 30
+    elif _theme_id == _THEME_ICE:
+        base_color = (100, 160, 220)   # pale blue
+        node_color = (130, 190, 255)
+        pulse_color = (180, 220, 255)
+        base_alpha = 14
+        node_alpha = 24
+    else:
+        base_color = (40, 50, 70)      # dim blue-gray for classic
+        node_color = (60, 70, 90)
+        pulse_color = (80, 100, 130)
+        base_alpha = 12
+        node_alpha = 18
+
+    # Draw traces
+    for trace in _cyber_traces:
+        _kind, x1, y1, x2, y2, phase_offset = trace
+        # Subtle pulse: brightness oscillates slowly
+        pulse = 0.6 + 0.4 * math.sin(elapsed * 0.8 + phase_offset * math.pi * 6)
+        a = int(base_alpha * pulse)
+        color = (*base_color, max(4, a))
+        pygame.draw.line(surface, color, (x1, y1), (x2, y2), 1)
+
+    # Draw junction nodes (small dots)
+    for node in _cyber_nodes:
+        nx, ny, phase_offset = node
+        pulse = 0.5 + 0.5 * math.sin(elapsed * 1.2 + phase_offset * math.pi * 8)
+        a = int(node_alpha * pulse)
+        color = (*node_color, max(4, a))
+        pygame.draw.circle(surface, color, (int(nx), int(ny)), 2)
+
+    # Travelling pulse dots along a few traces (data packets)
+    num_pulses = 8
+    for i in range(num_pulses):
+        # Each pulse travels along a different trace
+        trace_idx = (i * 7) % len(_cyber_traces)
+        trace = _cyber_traces[trace_idx]
+        _kind, x1, y1, x2, y2, phase_offset = trace
+        # Position along the trace oscillates over time
+        speed = 0.3 + phase_offset * 0.4
+        t = ((elapsed * speed + phase_offset * 5.0) % 2.0)
+        if t > 1.0:
+            t = 2.0 - t  # bounce back
+        px = x1 + (x2 - x1) * t
+        py = y1 + (y2 - y1) * t
+        # Bright dot
+        pa = int(35 + 25 * math.sin(elapsed * 2.0 + i))
+        pygame.draw.circle(surface, (*pulse_color, max(8, pa)), (int(px), int(py)), 2)
+
+
+# ==============================
+# Animated double-helix "graph" (bottom-left, ice theme only)
+# ==============================
 
 _HELIX_W = 220         # panel width
 _HELIX_H = 140         # panel height
