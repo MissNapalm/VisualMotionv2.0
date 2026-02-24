@@ -102,6 +102,7 @@ class _Gnome:
         self.dir = 1 if random.random() < 0.5 else -1   # walking direction
         self.grounded = False
         self.walk_timer = 0
+        self.hp = 3                     # hit points — takes 3 bullets to kill
         self.color = random.choice(_GNOME_COLORS)
         self.hat_color = random.choice(_HAT_COLORS)
         self.alive = True
@@ -351,6 +352,18 @@ class _Gnome:
             self.gy = float(iy)
             self.fall_start = 0.0
             self.parachute_open = False
+
+            # Push gnome up if clipping into solid terrain
+            _solid_pass = (EMPTY, FIRE, NAPALM, WATER, POISON, HOLYWATER, MONEY)
+            cix, ciy = int(self.gx), int(self.gy)
+            if 0 <= cix < w and 0 <= ciy < h and grid[ciy, cix] not in _solid_pass:
+                # Inside solid ground — scan upward for first empty row
+                for scan_y in range(ciy - 1, max(ciy - 8, -1), -1):
+                    if scan_y < 0:
+                        break
+                    if grid[scan_y, cix] in _solid_pass:
+                        self.gy = float(scan_y)
+                        break
 
             # --- celebration hop ---
             if self.celebrating:
@@ -623,7 +636,7 @@ class _Buckshot:
 
     def step(self, grid):
         h, w = grid.shape
-        self.vy += 0.08  # very slight gravity arc
+        # No bullet drop — flat trajectory
         self.x += self.vx
         self.y += self.vy
         self.life += 1
@@ -650,6 +663,188 @@ class _Buckshot:
             return
         # Die after max range (~60 cells)
         if self.life > 60:
+            self.alive = False
+
+
+# ────────────────────────────────────────────
+# Missile — player weapon, flies toward target and explodes on impact
+# ────────────────────────────────────────────
+
+_MISSILE_SPEED = 3.0
+_MISSILE_RADIUS = 8  # explosion radius in grid cells
+
+class _Missile:
+    """A missile projectile. Flies straight, explodes on hitting solid terrain."""
+
+    def __init__(self, x, y, vx, vy):
+        self.x = float(x)
+        self.y = float(y)
+        self.vx = vx
+        self.vy = vy
+        self.alive = True
+        self.exploded = False
+        self.life = 0
+        # Trail particles (cosmetic)
+        self.trail = []
+
+    def step(self, grid):
+        h, w = grid.shape
+        # No bullet drop — flat trajectory
+        self.x += self.vx
+        self.y += self.vy
+        self.life += 1
+        ix, iy = int(self.x), int(self.y)
+        # Save trail position
+        if self.life % 2 == 0:
+            self.trail.append((self.x, self.y))
+            if len(self.trail) > 10:
+                self.trail.pop(0)
+        # Out of bounds
+        if ix < 0 or ix >= w or iy < 0 or iy >= h:
+            self.alive = False
+            return
+        cell = grid[iy, ix]
+        _passable_missile = (EMPTY, FIRE, NAPALM, TUNNEL, WATER, POISON, HOLYWATER)
+        if cell not in _passable_missile:
+            # Hit something solid — explode
+            self.exploded = True
+            self.alive = False
+            return
+        # Die after very long range
+        if self.life > 200:
+            self.exploded = True
+            self.alive = False
+
+
+# ────────────────────────────────────────────
+# FlameParticle — short-lived fire particle for flamethrower weapon
+# ────────────────────────────────────────────
+
+class _FlameParticle:
+    """A single flame particle from the flamethrower. Travels a short distance
+    then plants fire/napalm onto the grid."""
+
+    def __init__(self, x, y, vx, vy):
+        self.x = float(x)
+        self.y = float(y)
+        self.vx = vx
+        self.vy = vy
+        self.alive = True
+        self.life = 0
+        self.color = random.choice(_FIRE_COLORS)
+
+    def step(self, grid, colors):
+        h, w = grid.shape
+        self.vy += 0.06  # slight gravity — flames arc down
+        self.vx *= 0.97  # slight air drag
+        self.x += self.vx
+        self.y += self.vy
+        self.life += 1
+        ix, iy = int(self.x), int(self.y)
+        if ix < 0 or ix >= w or iy < 0 or iy >= h:
+            self.alive = False
+            return
+        cell = grid[iy, ix]
+        # If we hit something burnable — set it on fire
+        if cell in (WOOD, PLANT, DIRT, HEAVY):
+            grid[iy, ix] = FIRE
+            colors[iy, ix] = random.choice(_FIRE_COLORS)
+            self.alive = False
+            return
+        # If we hit solid non-burnable — place napalm nearby and die
+        if cell not in (EMPTY, FIRE, NAPALM, TUNNEL, WATER, POISON, HOLYWATER):
+            # Try to place napalm just before the solid cell
+            px, py = int(self.x - self.vx), int(self.y - self.vy)
+            if 0 <= px < w and 0 <= py < h and grid[py, px] == EMPTY:
+                grid[py, px] = NAPALM
+                colors[py, px] = random.choice(_NAPALM_COLORS)
+            self.alive = False
+            return
+        # Place napalm in empty space as we travel
+        if cell == EMPTY and random.random() < 0.3:
+            grid[iy, ix] = NAPALM
+            colors[iy, ix] = random.choice(_NAPALM_COLORS)
+        # Short range — die after ~25 ticks
+        if self.life > 25:
+            self.alive = False
+
+
+# ────────────────────────────────────────────
+# HomingMissile — player-guided missile, camera follows it, steers toward mouse
+# ────────────────────────────────────────────
+
+_HOMING_SPEED = 2.5
+_HOMING_TURN_RATE = 0.12  # radians per tick max steering
+_HOMING_RADIUS = 10  # explosion radius in grid cells
+
+class _HomingMissile:
+    """A guided missile. Each tick it turns toward the current mouse cursor
+    position (in grid coords).  The camera follows it until it hits something
+    and explodes."""
+
+    def __init__(self, x, y, vx, vy):
+        self.x = float(x)
+        self.y = float(y)
+        self.vx = vx
+        self.vy = vy
+        self.alive = True
+        self.exploded = False
+        self.life = 0
+        self.trail = []
+        # Target grid coords — updated each frame by the game loop
+        self.target_gx = x
+        self.target_gy = y
+
+    def step(self, grid):
+        h, w = grid.shape
+        # Steer toward target
+        dx = self.target_gx - self.x
+        dy = self.target_gy - self.y
+        if math.hypot(dx, dy) > 0.1:
+            desired_angle = math.atan2(dy, dx)
+            current_angle = math.atan2(self.vy, self.vx)
+            # Signed angle difference
+            diff = desired_angle - current_angle
+            # Normalize to [-pi, pi]
+            while diff > math.pi:
+                diff -= 2 * math.pi
+            while diff < -math.pi:
+                diff += 2 * math.pi
+            # Clamp turn rate
+            if diff > _HOMING_TURN_RATE:
+                diff = _HOMING_TURN_RATE
+            elif diff < -_HOMING_TURN_RATE:
+                diff = -_HOMING_TURN_RATE
+            new_angle = current_angle + diff
+            spd = math.hypot(self.vx, self.vy)
+            self.vx = math.cos(new_angle) * spd
+            self.vy = math.sin(new_angle) * spd
+
+        # No gravity — flat / guided
+        self.x += self.vx
+        self.y += self.vy
+        self.life += 1
+
+        # Trail
+        if self.life % 2 == 0:
+            self.trail.append((self.x, self.y))
+            if len(self.trail) > 15:
+                self.trail.pop(0)
+
+        ix, iy = int(self.x), int(self.y)
+        if ix < 0 or ix >= w or iy < 0 or iy >= h:
+            self.alive = False
+            self.exploded = True
+            return
+        cell = grid[iy, ix]
+        _passable = (EMPTY, FIRE, NAPALM, TUNNEL, WATER, POISON, HOLYWATER)
+        if cell not in _passable:
+            self.exploded = True
+            self.alive = False
+            return
+        # Die after very long range
+        if self.life > 400:
+            self.exploded = True
             self.alive = False
 
 
@@ -1213,14 +1408,16 @@ class _Bomb:
             surface.blit(txt, (cx - 12, cy + 12))
 
 
-def _explode_bomb(state, bx, by, gnomes, gibs, sparks, is_fire=False):
+def _explode_bomb(state, bx, by, gnomes, gibs, sparks, is_fire=False, radius=None):
     """Explosion: destroys everything in a circle, leaves stable cavity.
-    is_fire: if True, fills the blast area with napalm instead of just clearing."""
+    is_fire: if True, fills the blast area with napalm instead of just clearing.
+    radius: override blast radius (defaults to _BOMB_RADIUS)."""
     g = state.grid
     c = state.colors
     h, w = g.shape
     cx, cy = int(bx), int(by)
-    radius = _BOMB_RADIUS
+    if radius is None:
+        radius = _BOMB_RADIUS
 
     # Destroy everything inside the blast radius — leave TUNNEL so dirt
     # above the crater doesn't collapse (TUNNEL blocks dirt but looks empty)
@@ -1309,8 +1506,8 @@ _CONFETTI_COLORS = [
 # ────────────────────────────────────────────
 
 _PLAYER_WIDTH = 2    # half-width in grid cells
-_PLAYER_HEIGHT = 5   # full height in grid cells
-_PLAYER_GRAVITY = 0.45
+_PLAYER_HEIGHT = 13  # full height in grid cells (matches gnome height)
+_PLAYER_GRAVITY = 0.25
 _PLAYER_JUMP_VEL = -3.8
 _PLAYER_MOVE_SPEED = 1.5
 _PLAYER_TERMINAL_VEL = 4.0
@@ -1352,6 +1549,11 @@ class _Player:
         self.hook_vy = 0.0
         self.hook_attached = False  # True once hook latches onto solid terrain
         self.hook_reeling = False   # True = pulling player toward hook
+        # Weapons
+        self._weapons = ['Shotgun', 'Missile', 'Flamethrower', 'MP5', 'Homing']
+        self._weapon_idx = 0  # current weapon index
+        self._flame_cooldown = 0  # ticks until next flame particle
+        self._mp5_cooldown = 0    # ticks until next MP5 bullet
 
     def step(self, grid):
         """Physics step — called once per sim tick.
@@ -1595,6 +1797,125 @@ class _Player:
             pvy = math.sin(a) * spd
             buckshots_list.append(_Buckshot(chest_gx, chest_gy, pvx, pvy))
 
+    def cycle_weapon(self, direction):
+        """Cycle through weapons. direction: +1 = next, -1 = previous."""
+        self._weapon_idx = (self._weapon_idx + direction) % len(self._weapons)
+
+    @property
+    def current_weapon(self):
+        return self._weapons[self._weapon_idx]
+
+    def fire_weapon(self, target_wx, target_wy, buckshots, missiles, flame_particles, homing_missiles=None):
+        """Fire the currently selected weapon toward target."""
+        weapon = self.current_weapon
+        if weapon == 'Shotgun':
+            self.shoot(target_wx, target_wy, buckshots)
+        elif weapon == 'Missile':
+            self._fire_missile(target_wx, target_wy, missiles)
+        elif weapon == 'Flamethrower':
+            self._fire_flamethrower(target_wx, target_wy, flame_particles)
+        elif weapon == 'MP5':
+            self._fire_mp5(target_wx, target_wy, buckshots)
+        elif weapon == 'Homing':
+            if homing_missiles is not None:
+                self._fire_homing(target_wx, target_wy, homing_missiles)
+
+    def _fire_missile(self, target_wx, target_wy, missiles_list):
+        """Fire a single missile toward target."""
+        chest_gx = self.gx
+        chest_gy = self.gy - _PLAYER_HEIGHT * 0.4
+        tgx = target_wx / _CELL
+        tgy = target_wy / _CELL
+        dx = tgx - chest_gx
+        dy = tgy - chest_gy
+        dist = math.hypot(dx, dy)
+        if dist < 0.1:
+            dx, dy = float(self.dir), 0.0
+            dist = 1.0
+        dx /= dist
+        dy /= dist
+        self.dir = 1 if dx >= 0 else -1
+        mvx = dx * _MISSILE_SPEED
+        mvy = dy * _MISSILE_SPEED
+        missiles_list.append(_Missile(chest_gx + dx * 2, chest_gy + dy * 2, mvx, mvy))
+
+    def _fire_flamethrower(self, target_wx, target_wy, flame_list):
+        """Spray a burst of flame particles toward target (continuous fire)."""
+        if self._flame_cooldown > 0:
+            self._flame_cooldown -= 1
+            return
+        self._flame_cooldown = 1  # fire every other tick for rapid spray
+        chest_gx = self.gx
+        chest_gy = self.gy - _PLAYER_HEIGHT * 0.4
+        tgx = target_wx / _CELL
+        tgy = target_wy / _CELL
+        dx = tgx - chest_gx
+        dy = tgy - chest_gy
+        dist = math.hypot(dx, dy)
+        if dist < 0.1:
+            dx, dy = float(self.dir), 0.0
+            dist = 1.0
+        dx /= dist
+        dy /= dist
+        self.dir = 1 if dx >= 0 else -1
+        base_angle = math.atan2(dy, dx)
+        # Spray 2-3 particles per burst, wider spread
+        for _ in range(random.randint(2, 3)):
+            a = base_angle + random.uniform(-0.25, 0.25)
+            spd = random.uniform(2.5, 4.0)
+            fvx = math.cos(a) * spd
+            fvy = math.sin(a) * spd
+            flame_list.append(_FlameParticle(chest_gx + dx * 1.5, chest_gy + dy * 1.5, fvx, fvy))
+
+    def _fire_mp5(self, target_wx, target_wy, buckshots_list):
+        """Rapid-fire single bullet toward target (continuous fire with cooldown)."""
+        if self._mp5_cooldown > 0:
+            self._mp5_cooldown -= 1
+            return
+        self._mp5_cooldown = 2  # fires every 2 ticks — very rapid
+        chest_gx = self.gx
+        chest_gy = self.gy - _PLAYER_HEIGHT * 0.4
+        tgx = target_wx / _CELL
+        tgy = target_wy / _CELL
+        dx = tgx - chest_gx
+        dy = tgy - chest_gy
+        dist = math.hypot(dx, dy)
+        if dist < 0.1:
+            dx, dy = float(self.dir), 0.0
+            dist = 1.0
+        dx /= dist
+        dy /= dist
+        self.dir = 1 if dx >= 0 else -1
+        base_angle = math.atan2(dy, dx)
+        # Single bullet with tiny spread
+        a = base_angle + random.uniform(-0.04, 0.04)
+        spd = 5.0  # fast bullets
+        bvx = math.cos(a) * spd
+        bvy = math.sin(a) * spd
+        buckshots_list.append(_Buckshot(chest_gx + dx * 2, chest_gy + dy * 2, bvx, bvy))
+
+    def _fire_homing(self, target_wx, target_wy, homing_list):
+        """Fire a single homing missile toward target. Only one at a time."""
+        # Don't fire if one is already active
+        if any(h.alive for h in homing_list):
+            return
+        chest_gx = self.gx
+        chest_gy = self.gy - _PLAYER_HEIGHT * 0.4
+        tgx = target_wx / _CELL
+        tgy = target_wy / _CELL
+        dx = tgx - chest_gx
+        dy = tgy - chest_gy
+        dist = math.hypot(dx, dy)
+        if dist < 0.1:
+            dx, dy = float(self.dir), 0.0
+            dist = 1.0
+        dx /= dist
+        dy /= dist
+        self.dir = 1 if dx >= 0 else -1
+        mvx = dx * _HOMING_SPEED
+        mvy = dy * _HOMING_SPEED
+        homing_list.append(_HomingMissile(chest_gx + dx * 2, chest_gy + dy * 2, mvx, mvy))
+
     def fire_hook(self, target_wx, target_wy):
         """Launch grappling hook toward (target_wx, target_wy) world-pixel coords."""
         # Origin: player head
@@ -1667,13 +1988,21 @@ class _Player:
                 pygame.draw.line(surface, (255, 220, 120),
                                  (hook_sx, hook_sy - anch), (hook_sx, hook_sy + anch), max(1, int(2 * z)))
 
-        # "P1" label above
-        fs = max(16, int(22 * z))
+        # Weapon name + P1 label above
+        fs = max(14, int(18 * z))
         if not hasattr(self, '_label_font') or self._label_font_size != fs:
             self._label_font = pygame.font.Font(None, fs)
             self._label_font_size = fs
-        lbl = self._label_font.render("P1", True, (255, 255, 80))
-        surface.blit(lbl, (cx - lbl.get_width() // 2, sy - int(14 * z)))
+        # Weapon name
+        wep_text = self.current_weapon
+        wep_colors = {'Shotgun': (255, 255, 80), 'Missile': (255, 120, 80), 'Flamethrower': (255, 180, 50),
+                      'MP5': (150, 255, 150), 'Homing': (255, 80, 255)}
+        wep_col = wep_colors.get(wep_text, (255, 255, 80))
+        wep_lbl = self._label_font.render(wep_text, True, wep_col)
+        surface.blit(wep_lbl, (cx - wep_lbl.get_width() // 2, sy - int(14 * z)))
+        # P1 above weapon name
+        p1_lbl = self._label_font.render("P1", True, (255, 255, 255))
+        surface.blit(p1_lbl, (cx - p1_lbl.get_width() // 2, sy - int(28 * z)))
 
 
 class _SandState:
@@ -2729,6 +3058,9 @@ class SandWindow:
         self._vine_tips = []
         self._worms = []
         self._bombs = []
+        self._missiles = []
+        self._flame_particles = []
+        self._homing_missiles = []
         self._bomb_font = pygame.font.Font(None, 20)
         self._poison_settle = {}        # (x,y) -> time when poison settled
         self._gnome_spawned_this_pinch = False
@@ -2944,6 +3276,9 @@ class SandWindow:
         self._worms = []
         self._bees = []
         self._bombs = []
+        self._missiles = []
+        self._flame_particles = []
+        self._homing_missiles = []
         self._poison_settle = {}
         self._gnome_spawned_this_pinch = False
         self._fill_done_this_pinch = False
@@ -3269,6 +3604,9 @@ class SandWindow:
                 self._worms = []
                 self._bees = []
                 self._bombs = []
+                self._missiles = []
+                self._flame_particles = []
+                self._homing_missiles = []
                 self._poison_settle = {}
                 self._player = None
                 self._cam_target_zoom = 1.0
@@ -3762,10 +4100,21 @@ class SandWindow:
         key = pygame key constant, down = True for press, False for release."""
         if self._player is None or not self._player.alive:
             return
+        # Check if left shift is held for weapon cycling
+        mods = pygame.key.get_mods()
+        shift_held = bool(mods & pygame.KMOD_LSHIFT)
         if key == pygame.K_a:
-            self._player.move_left = down
+            if shift_held and down:
+                # LShift+A = previous weapon
+                self._player.cycle_weapon(-1)
+            else:
+                self._player.move_left = down
         elif key == pygame.K_d:
-            self._player.move_right = down
+            if shift_held and down:
+                # LShift+D = next weapon
+                self._player.cycle_weapon(1)
+            else:
+                self._player.move_right = down
         elif key == pygame.K_s:
             self._player.move_down = down
         elif key == pygame.K_w:
@@ -3774,10 +4123,10 @@ class SandWindow:
         elif key == pygame.K_SPACE:
             self._player.jump_pressed = down
         elif key == pygame.K_e and down:
-            # E = fire shotgun toward the mouse cursor
+            # E = fire current weapon toward the mouse cursor
             mx, my = pygame.mouse.get_pos()
             wx, wy = self._screen_to_world(mx, my)
-            self._player.shoot(wx, wy, self._buckshots)
+            self._player.fire_weapon(wx, wy, self._buckshots, self._missiles, self._flame_particles, self._homing_missiles)
         elif key == pygame.K_q:
             if down:
                 # Q pressed — fire grappling hook toward mouse cursor
@@ -3883,24 +4232,102 @@ class SandWindow:
             for pellet in self._buckshots:
                 pellet.step(self._state.grid)
                 if pellet.alive:
-                    # Check if pellet hits any gnome (within ~2 grid cells)
+                    # Check if pellet hits any gnome (wider Y for taller gnomes)
                     for gnome in self._gnomes:
                         if not gnome.alive:
                             continue
-                        if abs(pellet.x - gnome.gx) < 2 and abs(pellet.y - gnome.gy) < 2:
-                            gnome.alive = False
+                        if abs(pellet.x - gnome.gx) < 3 and abs(pellet.y - gnome.gy) < 5:
+                            gnome.hp -= 1
                             pellet.alive = False
-                            # Spawn gibs flying away from the shot
-                            for _ in range(random.randint(8, 14)):
-                                gb = _Gib(int(gnome.gx), int(gnome.gy), gnome.color)
-                                gb.vx = pellet.vx * 0.3 + random.uniform(-2.0, 2.0)
-                                gb.vy = pellet.vy * 0.3 + random.uniform(-4.0, -1.0)
-                                self._gibs.append(gb)
-                            # Small spark burst
-                            for _ in range(random.randint(6, 10)):
-                                self._sparks.append(_Spark(gnome.gx, gnome.gy))
+                            if gnome.hp <= 0:
+                                gnome.alive = False
+                                # Big gib explosion on death
+                                for _ in range(random.randint(20, 35)):
+                                    gb = _Gib(int(gnome.gx), int(gnome.gy), gnome.color)
+                                    gb.vx = pellet.vx * 0.3 + random.uniform(-3.5, 3.5)
+                                    gb.vy = pellet.vy * 0.3 + random.uniform(-6.0, -1.0)
+                                    self._gibs.append(gb)
+                                # Big spark burst
+                                for _ in range(random.randint(15, 25)):
+                                    self._sparks.append(_Spark(gnome.gx, gnome.gy))
+                            else:
+                                # Hit but not dead — small blood splat
+                                for _ in range(random.randint(3, 6)):
+                                    gb = _Gib(int(gnome.gx), int(gnome.gy), (200, 50, 50))
+                                    gb.vx = pellet.vx * 0.2 + random.uniform(-1.5, 1.5)
+                                    gb.vy = random.uniform(-3.0, -0.5)
+                                    self._gibs.append(gb)
+                                for _ in range(random.randint(2, 4)):
+                                    self._sparks.append(_Spark(gnome.gx, gnome.gy))
                             break
             self._buckshots = [b for b in self._buckshots if b.alive]
+
+            # Step missiles — check for gnome hits, explode on solid terrain
+            for missile in self._missiles:
+                missile.step(self._state.grid)
+                if missile.alive:
+                    # Check gnome hits
+                    for gnome in self._gnomes:
+                        if not gnome.alive:
+                            continue
+                        if abs(missile.x - gnome.gx) < 3 and abs(missile.y - gnome.gy) < 3:
+                            missile.exploded = True
+                            missile.alive = False
+                            break
+            # Explode any missiles that hit
+            new_missiles = []
+            for missile in self._missiles:
+                if missile.exploded:
+                    _explode_bomb(self._state, missile.x, missile.y,
+                                  self._gnomes, self._gibs, self._sparks, is_fire=False,
+                                  radius=_MISSILE_RADIUS)
+                elif missile.alive:
+                    new_missiles.append(missile)
+            self._missiles = new_missiles
+
+            # Step flame particles
+            for fp in self._flame_particles:
+                fp.step(self._state.grid, self._state.colors)
+                # Check gnome hits — set gnome on fire
+                if fp.alive:
+                    for gnome in self._gnomes:
+                        if not gnome.alive or gnome.on_fire:
+                            continue
+                        if abs(fp.x - gnome.gx) < 2 and abs(fp.y - gnome.gy) < 2:
+                            gnome.on_fire = True
+                            gnome.fire_start_time = time.time()
+                            fp.alive = False
+                            break
+            self._flame_particles = [f for f in self._flame_particles if f.alive]
+
+            # Step homing missiles — update target from mouse, check gnome hits
+            if self._homing_missiles:
+                mx, my = pygame.mouse.get_pos()
+                wx, wy = self._screen_to_world(mx, my)
+                tgx = wx / _CELL
+                tgy = wy / _CELL
+                for hm in self._homing_missiles:
+                    hm.target_gx = tgx
+                    hm.target_gy = tgy
+                    hm.step(self._state.grid)
+                    if hm.alive:
+                        for gnome in self._gnomes:
+                            if not gnome.alive:
+                                continue
+                            if abs(hm.x - gnome.gx) < 3 and abs(hm.y - gnome.gy) < 3:
+                                hm.exploded = True
+                                hm.alive = False
+                                break
+                # Explode any that hit
+                new_homing = []
+                for hm in self._homing_missiles:
+                    if hm.exploded:
+                        _explode_bomb(self._state, hm.x, hm.y,
+                                      self._gnomes, self._gibs, self._sparks, is_fire=False,
+                                      radius=_HOMING_RADIUS)
+                    elif hm.alive:
+                        new_homing.append(hm)
+                self._homing_missiles = new_homing
 
             # Step splash drops
             for drop in self._splash_drops:
@@ -3934,19 +4361,44 @@ class SandWindow:
             if self._player is not None:
                 if self._player.alive:
                     keys = pygame.key.get_pressed()
-                    self._player.move_left = keys[pygame.K_a]
-                    self._player.move_right = keys[pygame.K_d]
+                    shift_held = keys[pygame.K_LSHIFT]
+                    # LShift+A/D = weapon cycling (single-shot per press)
+                    if shift_held:
+                        a_now = keys[pygame.K_a]
+                        if a_now and not getattr(self, '_shift_a_was', False):
+                            self._player.cycle_weapon(-1)
+                        self._shift_a_was = a_now
+                        d_now = keys[pygame.K_d]
+                        if d_now and not getattr(self, '_shift_d_was', False):
+                            self._player.cycle_weapon(1)
+                        self._shift_d_was = d_now
+                        # Don't move while cycling weapons
+                        self._player.move_left = False
+                        self._player.move_right = False
+                    else:
+                        self._shift_a_was = False
+                        self._shift_d_was = False
+                        self._player.move_left = keys[pygame.K_a]
+                        self._player.move_right = keys[pygame.K_d]
                     self._player.move_down = keys[pygame.K_s]
                     jump_now = keys[pygame.K_w] or keys[pygame.K_SPACE]
                     if not jump_now:
                         self._player._jump_consumed = False
                     self._player.jump_pressed = jump_now
-                    # E key — fire shotgun toward mouse cursor (single-shot per press)
+                    # E key — fire current weapon toward mouse cursor
                     e_now = keys[pygame.K_e]
-                    if e_now and not getattr(self, '_e_was_down', False):
-                        mx, my = pygame.mouse.get_pos()
-                        wx, wy = self._screen_to_world(mx, my)
-                        self._player.shoot(wx, wy, self._buckshots)
+                    if self._player.current_weapon in ('Flamethrower', 'MP5'):
+                        # Continuous fire while held
+                        if e_now:
+                            mx, my = pygame.mouse.get_pos()
+                            wx, wy = self._screen_to_world(mx, my)
+                            self._player.fire_weapon(wx, wy, self._buckshots, self._missiles, self._flame_particles, self._homing_missiles)
+                    else:
+                        # Single-shot weapons: fire once per press
+                        if e_now and not getattr(self, '_e_was_down', False):
+                            mx, my = pygame.mouse.get_pos()
+                            wx, wy = self._screen_to_world(mx, my)
+                            self._player.fire_weapon(wx, wy, self._buckshots, self._missiles, self._flame_particles, self._homing_missiles)
                     self._e_was_down = e_now
                     # Q key — grappling hook (hold to stay attached, release to let go)
                     q_now = keys[pygame.K_q]
@@ -3972,7 +4424,14 @@ class SandWindow:
             # Decide camera focus point
             focus_gx = self._player.gx
             focus_gy = self._player.gy
-            if self._player.hook_active:
+            # Homing missile overrides camera focus
+            active_homing = [h for h in self._homing_missiles if h.alive]
+            if active_homing:
+                hm = active_homing[0]
+                focus_gx = hm.x
+                focus_gy = hm.y
+                cam_smooth = 0.22  # fast tracking
+            elif self._player.hook_active:
                 # Pan camera toward the hook at the same speed the hook travels
                 # Blend focus between player and hook — 50/50 midpoint
                 focus_gx = (self._player.gx + self._player.hook_x) * 0.5
@@ -4026,83 +4485,81 @@ class SandWindow:
         for gnome in self._gnomes:
             sx = int((gnome.gx * _CELL + _CELL // 2) * cam_z + cam_ox)
             # Offset sy so feet land on the top of the cell below
-            sy = int((gnome.gy * _CELL + _CELL) * cam_z + cam_oy) - int(22 * cam_z)
+            # All offsets scaled by cam_z so gnomes scale with the world
+            z = cam_z  # shorthand
+            sy = int((gnome.gy * _CELL + _CELL) * z + cam_oy) - int(32 * z)
+            lw = max(2, int(3 * z))  # line width scales with zoom
             c = gnome.color
             # If on fire, flicker between orange/red
             if gnome.on_fire:
                 c = random.choice([(255, 80, 0), (255, 0, 0), (255, 180, 0)])
 
-            # Head
-            pygame.draw.circle(surface, c, (sx, sy - 14), 8)
-            # Hat — pointy gnome hat
+            # Head — bigger
+            pygame.draw.circle(surface, c, (sx, sy - int(20 * z)), max(4, int(10 * z)))
+            # Hat — pointy gnome hat (taller)
             hat_c = gnome.hat_color if not gnome.on_fire else c
             pygame.draw.polygon(surface, hat_c, [
-                (sx - 8, sy - 20),      # left brim
-                (sx + 8, sy - 20),      # right brim
-                (sx + gnome.dir * 3, sy - 35),  # pointy tip leans in walk dir
+                (sx - int(10 * z), sy - int(28 * z)),      # left brim
+                (sx + int(10 * z), sy - int(28 * z)),      # right brim
+                (sx + int(gnome.dir * 4 * z), sy - int(48 * z)),  # pointy tip
             ])
             # Parachute — drawn above gnome when deployed
             if gnome.parachute_open:
                 chute_c = (240, 240, 240)
-                # Canopy arc
+                pw, ph = int(50 * z), int(40 * z)
+                px0 = sx - pw // 2
+                py0 = sy - int(72 * z)
                 pygame.draw.arc(surface, chute_c,
-                                (sx - 21, sy - 57, 42, 34), 0, math.pi, 3)
-                # Fill canopy
+                                (px0, py0, pw, ph), 0, math.pi, max(2, int(3 * z)))
                 pygame.draw.ellipse(surface, (220, 220, 230),
-                                    (sx - 21, sy - 57, 42, 17))
-                # Strings from canopy edges to shoulders
-                pygame.draw.line(surface, chute_c, (sx - 18, sy - 47), (sx - 5, sy - 20), 1)
-                pygame.draw.line(surface, chute_c, (sx + 18, sy - 47), (sx + 5, sy - 20), 1)
-                pygame.draw.line(surface, chute_c, (sx, sy - 55), (sx, sy - 35), 1)
+                                    (px0, py0, pw, ph // 2))
+                pygame.draw.line(surface, chute_c, (sx - int(22 * z), sy - int(60 * z)), (sx - int(6 * z), sy - int(28 * z)), 1)
+                pygame.draw.line(surface, chute_c, (sx + int(22 * z), sy - int(60 * z)), (sx + int(6 * z), sy - int(28 * z)), 1)
+                pygame.draw.line(surface, chute_c, (sx, sy - int(70 * z)), (sx, sy - int(48 * z)), 1)
             # Held indicator — draw a little hand icon above
             if gnome.held:
-                pygame.draw.circle(surface, (220, 180, 120), (sx, sy - 43), 5)
-                pygame.draw.line(surface, (220, 180, 120), (sx, sy - 38), (sx, sy - 28), 2)
-            # Body
-            pygame.draw.line(surface, c, (sx, sy - 6), (sx, sy + 12), 3)
+                pygame.draw.circle(surface, (220, 180, 120), (sx, sy - int(56 * z)), max(3, int(6 * z)))
+                pygame.draw.line(surface, (220, 180, 120), (sx, sy - int(50 * z)), (sx, sy - int(38 * z)), max(1, int(2 * z)))
+            # Body (longer torso)
+            pygame.draw.line(surface, c, (sx, sy - int(10 * z)), (sx, sy + int(16 * z)), lw)
             # Arms
-            arm_wave = 4 if gnome.grounded and gnome.walk_timer == 0 else 0
+            arm_wave = int(5 * z) if gnome.grounded and gnome.walk_timer == 0 else 0
             if gnome.on_fire or gnome.bee_stung:
-                arm_wave = random.randint(-5, 5)  # frantic arm waving
+                arm_wave = int(random.randint(-6, 6) * z)
             if gnome.celebrating:
-                # Arms raised in celebration — wave them!
-                wave = random.randint(-3, 3)
-                pygame.draw.line(surface, c, (sx, sy), (sx - 10, sy - 14 + wave), 3)
-                pygame.draw.line(surface, c, (sx, sy), (sx + 10, sy - 14 - wave), 3)
+                wave = int(random.randint(-4, 4) * z)
+                pygame.draw.line(surface, c, (sx, sy - int(2 * z)), (sx - int(12 * z), sy - int(18 * z) + wave), lw)
+                pygame.draw.line(surface, c, (sx, sy - int(2 * z)), (sx + int(12 * z), sy - int(18 * z) - wave), lw)
             elif gnome.parachute_open:
-                # Arms up holding chute strings
-                pygame.draw.line(surface, c, (sx, sy), (sx - 10, sy - 14), 3)
-                pygame.draw.line(surface, c, (sx, sy), (sx + 10, sy - 14), 3)
+                pygame.draw.line(surface, c, (sx, sy - int(2 * z)), (sx - int(12 * z), sy - int(18 * z)), lw)
+                pygame.draw.line(surface, c, (sx, sy - int(2 * z)), (sx + int(12 * z), sy - int(18 * z)), lw)
             else:
-                pygame.draw.line(surface, c, (sx - 9, sy + arm_wave), (sx + 9, sy - arm_wave), 3)
-            # Legs — animate walking
+                pygame.draw.line(surface, c, (sx - int(11 * z), sy - int(2 * z) + arm_wave), (sx + int(11 * z), sy - int(2 * z) - arm_wave), lw)
+            # Legs — animate walking (longer legs)
             if gnome.grounded:
-                leg_off = 8 if gnome.walk_timer == 0 else 4
-                pygame.draw.line(surface, c, (sx, sy + 12), (sx - leg_off, sy + 22), 3)
-                pygame.draw.line(surface, c, (sx, sy + 12), (sx + leg_off, sy + 22), 3)
+                leg_off = int(10 * z) if gnome.walk_timer == 0 else int(5 * z)
+                pygame.draw.line(surface, c, (sx, sy + int(16 * z)), (sx - leg_off, sy + int(32 * z)), lw)
+                pygame.draw.line(surface, c, (sx, sy + int(16 * z)), (sx + leg_off, sy + int(32 * z)), lw)
             else:
-                # Falling — legs together
-                pygame.draw.line(surface, c, (sx, sy + 12), (sx - 4, sy + 22), 3)
-                pygame.draw.line(surface, c, (sx, sy + 12), (sx + 4, sy + 22), 3)
+                pygame.draw.line(surface, c, (sx, sy + int(16 * z)), (sx - int(5 * z), sy + int(32 * z)), lw)
+                pygame.draw.line(surface, c, (sx, sy + int(16 * z)), (sx + int(5 * z), sy + int(32 * z)), lw)
             # Direction indicator — eye dot
-            eye_x = sx + (4 * gnome.dir)
+            eye_x = sx + int(5 * gnome.dir * z)
             eye_color = (255, 0, 0) if gnome.is_zombie else (255, 255, 255)
-            pygame.draw.circle(surface, eye_color, (eye_x, sy - 16), 2)
-            # Frozen indicator — icy shimmer
-            # (frozen indicator removed — no circle on zombie touch)
+            pygame.draw.circle(surface, eye_color, (eye_x, sy - int(22 * z)), max(1, int(2 * z)))
             # Fire particles around burning gnome
             if gnome.on_fire:
                 for _ in range(3):
-                    fx = sx + random.randint(-8, 8)
-                    fy = sy + random.randint(-18, 9)
-                    pygame.draw.circle(surface, random.choice(_FIRE_COLORS), (fx, fy), random.randint(2, 4))
+                    fx = sx + int(random.randint(-10, 10) * z)
+                    fy = sy + int(random.randint(-24, 14) * z)
+                    pygame.draw.circle(surface, random.choice(_FIRE_COLORS), (fx, fy), random.randint(2, max(3, int(4 * z))))
             # Bee swarm around stung gnome
             if gnome.bee_stung:
                 for _ in range(5):
-                    bx = sx + random.randint(-12, 12)
-                    by = sy + random.randint(-22, 6)
-                    pygame.draw.circle(surface, (240, 210, 40), (bx, by), 2)
-                    pygame.draw.circle(surface, (40, 30, 5), (bx, by), 1)
+                    bx = sx + int(random.randint(-14, 14) * z)
+                    by = sy + int(random.randint(-28, 10) * z)
+                    pygame.draw.circle(surface, (240, 210, 40), (bx, by), max(1, int(2 * z)))
+                    pygame.draw.circle(surface, (40, 30, 5), (bx, by), max(1, int(1 * z)))
 
         # Draw gibs (bouncing body pieces)
         for gib in self._gibs:
@@ -4126,6 +4583,65 @@ class SandWindow:
             tail_y = int((pellet.y - pellet.vy * 0.5) * _CELL * cam_z + _CELL // 2 * cam_z + cam_oy)
             pygame.draw.line(surface, pellet.color, (tail_x, tail_y), (bx_px, by_px), max(1, int(2 * cam_z)))
             pygame.draw.circle(surface, (255, 255, 255), (bx_px, by_px), max(1, int(1.5 * cam_z)))
+
+        # Draw missiles
+        for missile in self._missiles:
+            mx_px = int(missile.x * _CELL * cam_z + _CELL // 2 * cam_z + cam_ox)
+            my_px = int(missile.y * _CELL * cam_z + _CELL // 2 * cam_z + cam_oy)
+            # Draw smoke trail
+            for i, (tx, ty) in enumerate(missile.trail):
+                tx_px = int(tx * _CELL * cam_z + _CELL // 2 * cam_z + cam_ox)
+                ty_px = int(ty * _CELL * cam_z + _CELL // 2 * cam_z + cam_oy)
+                alpha = int(80 * (i + 1) / len(missile.trail)) if missile.trail else 80
+                tr = max(1, int((2 + i * 0.3) * cam_z))
+                pygame.draw.circle(surface, (150, 150, 150), (tx_px, ty_px), tr)
+            # Missile body — small bright rectangle
+            mw = max(3, int(6 * cam_z))
+            mh = max(2, int(3 * cam_z))
+            pygame.draw.rect(surface, (200, 200, 200), (mx_px - mw // 2, my_px - mh // 2, mw, mh))
+            # Red nose cone
+            nose_r = max(1, int(2 * cam_z))
+            ndx = missile.vx / (math.hypot(missile.vx, missile.vy) + 0.001)
+            ndy = missile.vy / (math.hypot(missile.vx, missile.vy) + 0.001)
+            pygame.draw.circle(surface, (255, 50, 30),
+                               (mx_px + int(ndx * mw // 2), my_px + int(ndy * mw // 2)), nose_r)
+            # Flame exhaust
+            ex = mx_px - int(ndx * mw)
+            ey = my_px - int(ndy * mw)
+            pygame.draw.circle(surface, random.choice(_FIRE_COLORS), (ex, ey), max(2, int(3 * cam_z)))
+
+        # Draw flame particles
+        for fp in self._flame_particles:
+            fx_px = int(fp.x * _CELL * cam_z + _CELL // 2 * cam_z + cam_ox)
+            fy_px = int(fp.y * _CELL * cam_z + _CELL // 2 * cam_z + cam_oy)
+            fr = max(2, int((4 - fp.life * 0.1) * cam_z))
+            pygame.draw.circle(surface, fp.color, (fx_px, fy_px), fr)
+
+        # Draw homing missiles
+        for hm in self._homing_missiles:
+            hx_px = int(hm.x * _CELL * cam_z + _CELL // 2 * cam_z + cam_ox)
+            hy_px = int(hm.y * _CELL * cam_z + _CELL // 2 * cam_z + cam_oy)
+            # Smoke trail — purple tinted
+            for i, (tx, ty) in enumerate(hm.trail):
+                tx_px = int(tx * _CELL * cam_z + _CELL // 2 * cam_z + cam_ox)
+                ty_px = int(ty * _CELL * cam_z + _CELL // 2 * cam_z + cam_oy)
+                tr = max(1, int((2 + i * 0.3) * cam_z))
+                pygame.draw.circle(surface, (180, 100, 200), (tx_px, ty_px), tr)
+            # Body — purple/magenta rectangle
+            mw = max(4, int(7 * cam_z))
+            mh = max(3, int(4 * cam_z))
+            pygame.draw.rect(surface, (200, 80, 255), (hx_px - mw // 2, hy_px - mh // 2, mw, mh))
+            # Bright nose
+            spd = math.hypot(hm.vx, hm.vy) + 0.001
+            ndx = hm.vx / spd
+            ndy = hm.vy / spd
+            nose_r = max(2, int(3 * cam_z))
+            pygame.draw.circle(surface, (255, 200, 255),
+                               (hx_px + int(ndx * mw // 2), hy_px + int(ndy * mw // 2)), nose_r)
+            # Flame exhaust
+            ex = hx_px - int(ndx * mw)
+            ey = hy_px - int(ndy * mw)
+            pygame.draw.circle(surface, random.choice(_FIRE_COLORS), (ex, ey), max(2, int(4 * cam_z)))
 
         # Draw splash drops
         for drop in self._splash_drops:
