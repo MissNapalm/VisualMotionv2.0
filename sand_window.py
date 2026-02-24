@@ -41,10 +41,13 @@ PLANT = 18
 STEAM = 19
 TUNNEL = 20
 GLASS = 21
+BEEHIVE = 22
+FLOWER = 23
 
 _WOOD_COLOR = (139, 90, 43)
 _WOOD_COLORS = [(139, 90, 43), (120, 75, 35), (160, 105, 50), (110, 70, 30)]
 _CONCRETE_COLOR = (140, 140, 145)
+_COOLED_MAGMA_COLORS = [(90, 90, 90), (75, 75, 78), (105, 100, 100), (80, 82, 85), (95, 92, 88)]
 _GUNPOWDER_COLORS = [(80, 80, 80), (60, 60, 60), (40, 40, 40), (100, 100, 100), (30, 30, 30)]
 _NAPALM_COLORS = [(255, 60, 0), (255, 100, 0), (255, 40, 20), (200, 50, 0), (255, 120, 30)]
 _GASOLINE_COLORS = [(180, 200, 50), (160, 180, 40), (200, 210, 60), (140, 170, 30), (190, 190, 55)]
@@ -60,6 +63,10 @@ _PLANT_COLORS = [(30, 140, 30), (20, 120, 20), (40, 160, 40), (50, 180, 50), (25
                  (60, 170, 35), (35, 150, 45)]
 _STEAM_COLORS = [(200, 200, 210), (180, 185, 195), (220, 220, 230), (160, 165, 175), (210, 215, 225)]
 _GLASS_COLORS = [(180, 220, 240), (160, 200, 230), (200, 235, 250), (140, 195, 225), (190, 230, 245)]
+_BEEHIVE_COLORS = [(180, 140, 40), (160, 120, 30), (200, 155, 50), (140, 110, 25), (190, 145, 45)]
+_BEE_COLOR = (240, 210, 40)
+_FLOWER_COLORS = [(255, 80, 120), (255, 200, 50), (200, 100, 255), (255, 140, 60), (255, 255, 100),
+                  (255, 120, 180), (180, 80, 220)]
 
 _FUN_COLORS = [
     (255, 69, 0), (255, 105, 180), (255, 255, 0),
@@ -100,6 +107,8 @@ class _Gnome:
         self.alive = True
         self.on_fire = False
         self.fire_start_time = 0.0
+        self.bee_stung = False           # swarmed by bees — panics like fire
+        self.bee_sting_time = 0.0
         self.held = False               # being carried by HAND mode
         self.fall_start = 0.0           # when falling started
         self.has_parachute = True        # parachute available
@@ -311,12 +320,17 @@ class _Gnome:
             self.alive = False
             return
 
-        # Walk speed: every 5 ticks normally, every 3 on fire, every 10 in water
+        # Die after 5 seconds of bee stings
+        if self.bee_stung and (time.time() - self.bee_sting_time) > 5.0:
+            self.alive = False
+            return
+
+        # Walk speed: every 5 ticks normally, every 3 on fire/stung, every 10 in water
         # Zombies always walk at 7 (don't speed up on fire)
         in_water = (0 <= ix < w and 0 <= iy < h and grid[iy, ix] == WATER)
         if self.is_zombie:
             walk_interval = 7
-        elif self.on_fire:
+        elif self.on_fire or self.bee_stung:
             walk_interval = 3
         elif in_water:
             walk_interval = 10
@@ -363,6 +377,10 @@ class _Gnome:
                 return  # stay put while picking up money
 
             # --- walking ---
+            # Bee-stung gnomes randomly flip direction (panicking)
+            if self.bee_stung and random.random() < 0.25:
+                self.dir *= -1
+
             # Zombies chase nearest living gnome
             if self.is_zombie and self.zombie_target is not None:
                 tgt = self.zombie_target
@@ -760,6 +778,200 @@ class _Worm:
         sy = self.gy * _CELL + _CELL // 2
         r = max(4, _CELL)
         pygame.draw.circle(surface, self.color, (sx, sy), r)
+
+
+# ────────────────────────────────────────────
+# Bee — flies around beehive, pollinates plants
+# ────────────────────────────────────────────
+
+class _Bee:
+    """A bee that orbits its hive and flies to nearby plants to pollinate them."""
+
+    def __init__(self, hive_gx, hive_gy):
+        self.hive_gx = hive_gx
+        self.hive_gy = hive_gy
+        self.x = float(hive_gx) + random.uniform(-3, 3)
+        self.y = float(hive_gy) + random.uniform(-3, 3)
+        self.alive = True
+        # Wandering velocity
+        self.vx = random.uniform(-1.0, 1.0)
+        self.vy = random.uniform(-1.0, 1.0)
+        # Target plant cell (or None = orbit hive)
+        self.target = None
+        self._search_cooldown = 0
+        self._flower_cooldown = random.randint(50, 90)  # stagger initial cooldowns
+        # Gnome swarming
+        self._swarm_gnome = None         # reference to gnome we're attacking
+        # Stripe color for drawing
+        self.body_color = (240, 210, 40)
+        self.stripe_color = (40, 30, 5)
+
+    def step(self, grid, colors, gnomes=None):
+        h, w = grid.shape
+
+        # Check if hive still exists nearby (within 5 cells of original pos)
+        hx, hy = int(round(self.hive_gx)), int(round(self.hive_gy))
+        hive_alive = False
+        for dx in range(-2, 3):
+            for dy in range(-2, 3):
+                cx, cy = hx + dx, hy + dy
+                if 0 <= cx < w and 0 <= cy < h and grid[cy, cx] == BEEHIVE:
+                    hive_alive = True
+                    break
+            if hive_alive:
+                break
+        if not hive_alive:
+            self.alive = False
+            return
+
+        # --- Gnome swarming ---
+        # If already swarming a gnome, stay on it
+        if self._swarm_gnome is not None:
+            if not self._swarm_gnome.alive:
+                self._swarm_gnome = None  # gnome died, go back to normal
+            else:
+                # Orbit the gnome tightly
+                gx_t = self._swarm_gnome.gx
+                gy_t = self._swarm_gnome.gy
+                dx = gx_t - self.x
+                dy = gy_t - self.y
+                dist = math.hypot(dx, dy)
+                if dist > 3:
+                    self.vx += (dx / dist) * 0.6
+                    self.vy += (dy / dist) * 0.6
+                # Buzzy flutter
+                self.vx += random.uniform(-0.8, 0.8)
+                self.vy += random.uniform(-0.8, 0.8)
+                # Apply velocity and clamp (skip the rest of normal logic)
+                speed = math.hypot(self.vx, self.vy)
+                if speed > 2.5:
+                    self.vx = (self.vx / speed) * 2.5
+                    self.vy = (self.vy / speed) * 2.5
+                self.x += self.vx
+                self.y += self.vy
+                self.x = max(0, min(w - 1, self.x))
+                self.y = max(0, min(h - 1, self.y))
+                return
+
+        # Check for nearby gnomes to sting (within 3 cells)
+        if gnomes:
+            bx, by = int(round(self.x)), int(round(self.y))
+            for gnome in gnomes:
+                if not gnome.alive or gnome.on_fire:
+                    continue
+                d = math.hypot(gnome.gx - bx, gnome.gy - by)
+                if d < 3:
+                    # Sting!
+                    if not gnome.bee_stung:
+                        gnome.bee_stung = True
+                        gnome.bee_sting_time = time.time()
+                    self._swarm_gnome = gnome
+                    return
+
+        # Search for nearby plant — always searching when idle
+        self._search_cooldown -= 1
+        if self._search_cooldown <= 0 and self.target is None:
+            self._search_cooldown = random.randint(10, 20)
+            # Scan within 40 cells for PLANT
+            best_dist = 999
+            best_pos = None
+            scan_r = 40
+            for _ in range(60):  # random sampling for performance
+                sx = int(self.x) + random.randint(-scan_r, scan_r)
+                sy = int(self.y) + random.randint(-scan_r, scan_r)
+                if 0 <= sx < w and 0 <= sy < h and grid[sy, sx] == PLANT:
+                    d = abs(sx - self.x) + abs(sy - self.y)
+                    if d < best_dist:
+                        best_dist = d
+                        best_pos = (sx, sy)
+            if best_pos:
+                self.target = best_pos
+
+        # Tick flower cooldown
+        if self._flower_cooldown > 0:
+            self._flower_cooldown -= 1
+
+        # Movement
+        if self.target:
+            tx, ty = self.target
+            # Check target still valid
+            if 0 <= tx < w and 0 <= ty < h and grid[ty, tx] == PLANT:
+                dx = tx - self.x
+                dy = ty - self.y
+                dist = math.hypot(dx, dy)
+                if dist < 1.5:
+                    # Arrived at plant — place flower if cooldown ready
+                    if self._flower_cooldown <= 0:
+                        # Place flower on this plant cell (change its color)
+                        fc = random.choice(_FLOWER_COLORS)
+                        colors[ty, tx] = fc
+                        # Spread flower to adjacent + diagonal plant cells
+                        for ddx in range(-1, 2):
+                            for ddy in range(-1, 2):
+                                if ddx == 0 and ddy == 0:
+                                    continue
+                                fx, fy = tx + ddx, ty + ddy
+                                if 0 <= fx < w and 0 <= fy < h and grid[fy, fx] == PLANT:
+                                    if random.random() < 0.5:
+                                        colors[fy, fx] = random.choice(_FLOWER_COLORS)
+                        self._flower_cooldown = 72  # ~2 seconds at 36fps
+                    # Always go find another plant after arriving
+                    self.target = None
+                    self._search_cooldown = random.randint(5, 15)
+                else:
+                    # Fly toward target
+                    self.vx += (dx / dist) * 0.4 + random.uniform(-0.2, 0.2)
+                    self.vy += (dy / dist) * 0.4 + random.uniform(-0.2, 0.2)
+            else:
+                self.target = None  # plant was destroyed
+        else:
+            # Orbit the hive — gentle circular wandering
+            dx = self.hive_gx - self.x
+            dy = self.hive_gy - self.y
+            dist = math.hypot(dx, dy)
+            if dist > 8:
+                # Pull back toward hive
+                self.vx += (dx / dist) * 0.3
+                self.vy += (dy / dist) * 0.3
+            # Random flutter
+            self.vx += random.uniform(-0.5, 0.5)
+            self.vy += random.uniform(-0.5, 0.5)
+
+        # Damping
+        speed = math.hypot(self.vx, self.vy)
+        max_spd = 2.0
+        if speed > max_spd:
+            self.vx = (self.vx / speed) * max_spd
+            self.vy = (self.vy / speed) * max_spd
+
+        self.x += self.vx
+        self.y += self.vy
+
+        # Clamp to grid
+        self.x = max(0, min(w - 1, self.x))
+        self.y = max(0, min(h - 1, self.y))
+
+        # Fire / magma kills bees
+        gx, gy = int(round(self.x)), int(round(self.y))
+        if 0 <= gx < w and 0 <= gy < h:
+            cell = grid[gy, gx]
+            if cell in (FIRE, NAPALM, MAGMA):
+                self.alive = False
+
+    def draw(self, surface):
+        px = int(self.x * _CELL + _CELL // 2)
+        py = int(self.y * _CELL + _CELL // 2)
+        # Body (yellow oval)
+        r = max(2, _CELL // 2)
+        pygame.draw.circle(surface, self.body_color, (px, py), r)
+        # Stripe
+        pygame.draw.line(surface, self.stripe_color,
+                         (px - r, py), (px + r, py), 1)
+        # Wings (tiny white)
+        pygame.draw.circle(surface, (255, 255, 255, 160),
+                           (px - 1, py - r), max(1, r // 2))
+        pygame.draw.circle(surface, (255, 255, 255, 160),
+                           (px + 1, py - r), max(1, r // 2))
 
 
 # ────────────────────────────────────────────
@@ -1286,12 +1498,12 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False, splash_dr
                 })
 
     # ── Vine growth (gradual) ──────────────────────────────────
-    # Each vine tip extends by 1 cell every ~16 ticks (slow growth).
+    # Each vine tip extends by 1 cell every ~12 ticks (slow growth).
     if vine_tips is not None:
         still_growing = []
         for tip in vine_tips:
-            if random.random() < 0.9375:
-                # Skip this tick — slows growth to ~1 cell per 16 ticks
+            if random.random() < 0.919:
+                # Skip this tick — slows growth to ~1 cell per 12 ticks
                 still_growing.append(tip)
                 continue
             tip['x'] += tip['dx'] + random.uniform(-0.3, 0.3)
@@ -1690,20 +1902,27 @@ def _step_magma(state):
 
         extinguished = False
         if water_count >= 1:
-            # Any water contact — magma hardens to concrete
+            # Any water contact — magma hardens to grey rock
             # Surrounding water also solidifies into concrete (thick formation)
-            # with a few cells becoming steam for visual sizzle
+            # with cells becoming steam for visible sizzle
             g[y, x] = CONCRETE
-            c[y, x] = _CONCRETE_COLOR
+            c[y, x] = random.choice(_COOLED_MAGMA_COLORS)
+            # Steam burst upward from the hardening point
+            for sy in range(1, 4):
+                sx_off = random.randint(-1, 1)
+                steam_x, steam_y = x + sx_off, y - sy
+                if 0 <= steam_x < w and 0 <= steam_y < h and g[steam_y, steam_x] in (EMPTY, TUNNEL, WATER):
+                    g[steam_y, steam_x] = STEAM
+                    c[steam_y, steam_x] = random.choice(_STEAM_COLORS)
             for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, -1), (-1, 1), (1, 1)]:
                 nx, ny2 = x + dx, y + dy
                 if 0 <= nx < w and 0 <= ny2 < h and g[ny2, nx] == WATER:
-                    if random.random() < 0.7:
-                        # Most water hardens to concrete
+                    if random.random() < 0.5:
+                        # Half water hardens to concrete
                         g[ny2, nx] = CONCRETE
-                        c[ny2, nx] = _CONCRETE_COLOR
+                        c[ny2, nx] = random.choice(_COOLED_MAGMA_COLORS)
                     else:
-                        # Some water sizzles to steam
+                        # Other half sizzles to steam
                         g[ny2, nx] = STEAM
                         c[ny2, nx] = random.choice(_STEAM_COLORS)
                     # Also convert the ring around each water neighbor
@@ -1712,7 +1931,7 @@ def _step_magma(state):
                         if 0 <= nx2 < w and 0 <= ny3 < h and g[ny3, nx2] == WATER:
                             if random.random() < 0.5:
                                 g[ny3, nx2] = CONCRETE
-                                c[ny3, nx2] = _CONCRETE_COLOR
+                                c[ny3, nx2] = random.choice(_COOLED_MAGMA_COLORS)
                             else:
                                 g[ny3, nx2] = STEAM
                                 c[ny3, nx2] = random.choice(_STEAM_COLORS)
@@ -2037,6 +2256,7 @@ class SandWindow:
     MODE_SEED = 23
     MODE_WORM = 24
     MODE_GLASS = 25
+    MODE_BEE = 26
 
     def __init__(self, window_width, window_height):
         self.visible = False
@@ -2209,6 +2429,9 @@ class SandWindow:
         x, y = _place(r, c)
         self._btn_glass = _Button(x, y, bw, bh, "GLASS", font_size=20,
                                   color=(80, 110, 130), active_color=(180, 220, 240)); c += 1
+        x, y = _place(r, c)
+        self._btn_bee = _Button(x, y, bw, bh, "BEES", font_size=22,
+                                color=(120, 100, 20), active_color=(240, 210, 40)); c += 1
 
         # Menu buttons — only visible when menu is open
         self._menu_buttons = [
@@ -2223,7 +2446,7 @@ class SandWindow:
             self._btn_wind, self._btn_wind_dir, self._btn_gravity,
             self._btn_slow, self._btn_fast, self._btn_quit,
             self._btn_seed, self._btn_worm,
-            self._btn_glass,
+            self._btn_glass, self._btn_bee,
         ]
 
         # All buttons = menu toggle + menu items
@@ -2250,6 +2473,7 @@ class SandWindow:
         self._splash_drops = []
         self._vine_tips = []
         self._worms = []
+        self._bees = []
         self._bombs = []
         self._poison_settle = {}
         self._gnome_spawned_this_pinch = False
@@ -2282,6 +2506,7 @@ class SandWindow:
             self.MODE_DIRT: "☰ DRT", self.MODE_MATCH: "☰ MCH", self.MODE_MAGMA: "☰ MAG",
             self.MODE_FILL: "☰ FIL", self.MODE_SEED: "☰ SED",
             self.MODE_WORM: "☰ WRM", self.MODE_GLASS: "☰ GLS",
+            self.MODE_BEE: "☰ BEE",
         }
         self._btn_menu.label = _mode_labels.get(self._mode, "☰")
         self._btn_pour.active = (self._mode == self.MODE_POUR)
@@ -2309,6 +2534,7 @@ class SandWindow:
         self._btn_seed.active = (self._mode == self.MODE_SEED)
         self._btn_worm.active = (self._mode == self.MODE_WORM)
         self._btn_glass.active = (self._mode == self.MODE_GLASS)
+        self._btn_bee.active = (self._mode == self.MODE_BEE)
         # Show what material fill will use
         _fill_names = {
             self.MODE_POUR: "FILL:S",
@@ -2514,6 +2740,9 @@ class SandWindow:
                 self._mode = self.MODE_GLASS
                 self._fill_material = self.MODE_GLASS
                 self._update_button_states(); return
+            if self._btn_bee.hit(px, py):
+                self._mode = self.MODE_BEE
+                self._update_button_states(); return
             if self._btn_color.hit(px, py):
                 self.random_color()
                 self._update_button_states(); return
@@ -2540,6 +2769,7 @@ class SandWindow:
                 self._splash_drops = []
                 self._vine_tips = []
                 self._worms = []
+                self._bees = []
                 self._bombs = []
                 self._poison_settle = {}
                 self._menu_open = False; self._btn_menu.active = False
@@ -2662,6 +2892,23 @@ class SandWindow:
                     self._state.add(SEED, rx, ry, random.choice(_SEED_COLORS))
             elif self._mode == self.MODE_FILL:
                 self._flood_fill(gx, gy)
+            elif self._mode == self.MODE_BEE:
+                # Spawn beehive + bees on tap
+                g = self._state.grid
+                c = self._state.colors
+                h, w = g.shape
+                # Place rounded beehive (5×5 disc)
+                for dy in range(-2, 3):
+                    for dx in range(-2, 3):
+                        if abs(dx) == 2 and abs(dy) == 2:
+                            continue  # skip corners for roundness
+                        bx, by = gx + dx, gy + dy
+                        if 0 <= bx < w and 0 <= by < h:
+                            g[by, bx] = BEEHIVE
+                            c[by, bx] = random.choice(_BEEHIVE_COLORS)
+                num_bees = random.randint(10, 14)
+                for _ in range(num_bees):
+                    self._bees.append(_Bee(gx, gy))
 
     def handle_pinch(self, px, py):
         if self._in_ui_zone(px, py):
@@ -2905,6 +3152,28 @@ class SandWindow:
                 self._gnome_spawned_this_pinch = True
             self._last_wall_gx = None
             self._last_wall_gy = None
+        elif self._mode == self.MODE_BEE:
+            # Spawn beehive + bees — one-shot per pinch
+            if not getattr(self, '_gnome_spawned_this_pinch', False):
+                g = self._state.grid
+                c = self._state.colors
+                h, w = g.shape
+                # Place rounded beehive (5×5 disc)
+                for dy in range(-2, 3):
+                    for dx in range(-2, 3):
+                        if abs(dx) == 2 and abs(dy) == 2:
+                            continue  # skip corners for roundness
+                        bx, by = gx + dx, gy + dy
+                        if 0 <= bx < w and 0 <= by < h:
+                            g[by, bx] = BEEHIVE
+                            c[by, bx] = random.choice(_BEEHIVE_COLORS)
+                # Spawn 10-14 bees around the hive
+                num_bees = random.randint(10, 14)
+                for _ in range(num_bees):
+                    self._bees.append(_Bee(gx, gy))
+                self._gnome_spawned_this_pinch = True
+            self._last_wall_gx = None
+            self._last_wall_gy = None
 
     def handle_double_click(self, px, py):
         """Double-click line tool: first click sets start, second draws line."""
@@ -2966,7 +3235,7 @@ class SandWindow:
     _SCROLL_MODES = [
         MODE_POUR, MODE_HAND, MODE_WOOD, MODE_CONCRETE, MODE_ERASE,
         MODE_GNOME, MODE_FIRE, MODE_GUNPOWDER, MODE_NAPALM, MODE_GASOLINE,
-        MODE_WATER, MODE_CONFETTI, MODE_POISON, MODE_HOLYWATER, MODE_ICE, MODE_BOMB, MODE_FIREBOMB, MODE_MONEY, MODE_DIRT, MODE_MATCH, MODE_MAGMA, MODE_FILL, MODE_SEED, MODE_WORM, MODE_GLASS,
+        MODE_WATER, MODE_CONFETTI, MODE_POISON, MODE_HOLYWATER, MODE_ICE, MODE_BOMB, MODE_FIREBOMB, MODE_MONEY, MODE_DIRT, MODE_MATCH, MODE_MAGMA, MODE_FILL, MODE_SEED, MODE_WORM, MODE_GLASS, MODE_BEE,
     ]
 
     def handle_scroll(self, direction):
@@ -2978,7 +3247,7 @@ class SandWindow:
         idx = (idx + direction) % len(self._SCROLL_MODES)
         self._mode = self._SCROLL_MODES[idx]
         # Update fill material for material modes
-        if self._mode not in (self.MODE_ERASE, self.MODE_GNOME, self.MODE_HAND, self.MODE_FILL, self.MODE_CONFETTI, self.MODE_POISON, self.MODE_HOLYWATER, self.MODE_ICE, self.MODE_BOMB, self.MODE_FIREBOMB, self.MODE_MONEY, self.MODE_MATCH, self.MODE_MAGMA, self.MODE_SEED, self.MODE_WORM):
+        if self._mode not in (self.MODE_ERASE, self.MODE_GNOME, self.MODE_HAND, self.MODE_FILL, self.MODE_CONFETTI, self.MODE_POISON, self.MODE_HOLYWATER, self.MODE_ICE, self.MODE_BOMB, self.MODE_FIREBOMB, self.MODE_MONEY, self.MODE_MATCH, self.MODE_MAGMA, self.MODE_SEED, self.MODE_WORM, self.MODE_BEE):
             self._fill_material = self._mode
         self._update_button_states()
 
@@ -3083,6 +3352,11 @@ class SandWindow:
                 worm.step(self._state.grid, self._state.colors)
             self._worms = [w for w in self._worms if w.alive]
 
+            # Step bees
+            for bee in self._bees:
+                bee.step(self._state.grid, self._state.colors, self._gnomes)
+            self._bees = [b for b in self._bees if b.alive]
+
             # Step bombs — physics + fuse check
             for bomb in self._bombs:
                 bomb.step(self._state.grid)
@@ -3150,7 +3424,7 @@ class SandWindow:
             pygame.draw.line(surface, c, (sx, sy - 6), (sx, sy + 12), 3)
             # Arms
             arm_wave = 4 if gnome.grounded and gnome.walk_timer == 0 else 0
-            if gnome.on_fire:
+            if gnome.on_fire or gnome.bee_stung:
                 arm_wave = random.randint(-5, 5)  # frantic arm waving
             if gnome.celebrating:
                 # Arms raised in celebration — wave them!
@@ -3184,6 +3458,13 @@ class SandWindow:
                     fx = sx + random.randint(-8, 8)
                     fy = sy + random.randint(-18, 9)
                     pygame.draw.circle(surface, random.choice(_FIRE_COLORS), (fx, fy), random.randint(2, 4))
+            # Bee swarm around stung gnome
+            if gnome.bee_stung:
+                for _ in range(5):
+                    bx = sx + random.randint(-12, 12)
+                    by = sy + random.randint(-22, 6)
+                    pygame.draw.circle(surface, (240, 210, 40), (bx, by), 2)
+                    pygame.draw.circle(surface, (40, 30, 5), (bx, by), 1)
 
         # Draw gibs (bouncing body pieces)
         for gib in self._gibs:
@@ -3206,6 +3487,10 @@ class SandWindow:
         # Draw worms
         for worm in self._worms:
             worm.draw(surface)
+
+        # Draw bees
+        for bee in self._bees:
+            bee.draw(surface)
 
         # Draw bombs
         for bomb in self._bombs:
