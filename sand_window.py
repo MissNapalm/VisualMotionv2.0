@@ -1286,12 +1286,12 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False, splash_dr
                 })
 
     # ── Vine growth (gradual) ──────────────────────────────────
-    # Each vine tip extends by 1 cell every ~4 ticks (slow growth).
+    # Each vine tip extends by 1 cell every ~16 ticks (slow growth).
     if vine_tips is not None:
         still_growing = []
         for tip in vine_tips:
-            if random.random() < 0.75:
-                # Skip this tick — slows growth to ~1 cell per 4 ticks
+            if random.random() < 0.9375:
+                # Skip this tick — slows growth to ~1 cell per 16 ticks
                 still_growing.append(tip)
                 continue
             tip['x'] += tip['dx'] + random.uniform(-0.3, 0.3)
@@ -1388,6 +1388,7 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False, splash_dr
 def _step_fire(state):
     """Physics step for fire particles: rise upward, spread, consume."""
     _FIRE_MAX_AGE = 54    # ~1.5 seconds at 36 fps
+    _FIRE_MAX_AGE_PLANT = 144  # ~4 seconds — fire on burning plants lingers
     g = state.grid
     c = state.colors
     fa = state.fire_age
@@ -1400,8 +1401,8 @@ def _step_fire(state):
     # Bulk-age all fire cells by 1 tick
     fa[fire] = np.minimum(fa[fire].astype(np.uint16) + 1, 255).astype(np.uint8)
 
-    # Kill any fire that's exceeded max age
-    old_fire = fire & (fa >= _FIRE_MAX_AGE)
+    # Kill any fire that's exceeded the longest possible max age
+    old_fire = fire & (fa >= _FIRE_MAX_AGE_PLANT)
     g[old_fire] = EMPTY
     fa[old_fire] = 0
 
@@ -1455,7 +1456,7 @@ def _step_fire(state):
                         g[ny2, nx] = FIRE
                         c[ny2, nx] = random.choice(_FIRE_COLORS)
                 elif cell == PLANT:
-                    if random.random() < 0.04:       # plants burn easily
+                    if random.random() < 0.15:       # plants burn aggressively
                         g[ny2, nx] = FIRE
                         c[ny2, nx] = random.choice(_FIRE_COLORS)
                 elif cell == DIRT:
@@ -1525,8 +1526,16 @@ def _step_fire(state):
                     moved = True
 
         # Fire has a chance to die out — ramps up aggressively with age
+        # Fire adjacent to plant uses a much longer lifetime (burns slowly)
         age = fa[y, x]
-        die_chance = 0.08 + (age / _FIRE_MAX_AGE) * 0.80
+        near_plant = False
+        for dx2, dy2 in ((-1,0),(1,0),(0,-1),(0,1)):
+            nx2, ny2 = x + dx2, y + dy2
+            if 0 <= nx2 < w and 0 <= ny2 < h and g[ny2, nx2] == PLANT:
+                near_plant = True
+                break
+        max_age = _FIRE_MAX_AGE_PLANT if near_plant else _FIRE_MAX_AGE
+        die_chance = 0.08 + (age / max_age) * 0.80
         if random.random() < die_chance:
             g[y, x] = EMPTY
             fa[y, x] = 0
@@ -1581,7 +1590,7 @@ def _step_napalm(state):
                         g[ny2, nx] = FIRE
                         c[ny2, nx] = random.choice(_FIRE_COLORS)
                 elif cell == PLANT:
-                    if random.random() < 0.04:
+                    if random.random() < 0.15:
                         g[ny2, nx] = FIRE
                         c[ny2, nx] = random.choice(_FIRE_COLORS)
                 elif cell == DIRT:
@@ -1662,6 +1671,9 @@ def _step_magma(state):
 
     ys, xs = _throttle(ys, xs)
 
+    _magma_open = {EMPTY, TUNNEL}
+    _magma_displace = {WATER, GASOLINE, POISON, HOLYWATER}
+
     for i in range(len(ys)):
         y, x = int(ys[i]), int(xs[i])
         if g[y, x] != MAGMA:
@@ -1724,7 +1736,7 @@ def _step_magma(state):
                             g[ny2, nx] = FIRE
                             c[ny2, nx] = random.choice(_FIRE_COLORS)
                     elif cell == PLANT:
-                        if random.random() < 0.04:
+                        if random.random() < 0.15:
                             g[ny2, nx] = FIRE
                             c[ny2, nx] = random.choice(_FIRE_COLORS)
                     elif cell == DIRT:
@@ -1751,43 +1763,134 @@ def _step_magma(state):
         if extinguished:
             continue
 
-        # Magma FALLS downward (like napalm)
+        # ── Magma FALLS like a thick fluid ──
         ny = y + 1
         moved = False
 
-        if 0 <= ny < h and g[ny, x] == EMPTY:
-            g[y, x] = EMPTY
-            g[ny, x] = MAGMA
-            c[ny, x] = col
-            y = ny
-            moved = True
-        else:
+        if 0 <= ny < h:
+            below = g[ny, x]
+            if below in _magma_open:
+                g[y, x] = EMPTY
+                g[ny, x] = MAGMA
+                c[ny, x] = col
+                y = ny
+                moved = True
+            elif below in _magma_displace:
+                # Magma sinks through lighter fluids (swap)
+                fluid_t = g[ny, x]
+                fluid_c = c[ny, x].copy()
+                g[ny, x] = MAGMA
+                c[ny, x] = col
+                g[y, x] = fluid_t
+                c[y, x] = fluid_c
+                y = ny
+                moved = True
+
+        if not moved:
+            # Try diagonal fall (random order)
+            ny = y + 1
             if random.random() < 0.5:
                 tries = [(x - 1, ny), (x + 1, ny)]
             else:
                 tries = [(x + 1, ny), (x - 1, ny)]
             for tx, ty in tries:
-                if 0 <= tx < w and 0 <= ty < h and g[ty, tx] == EMPTY:
-                    g[y, x] = EMPTY
-                    g[ty, tx] = MAGMA
-                    c[ty, tx] = col
-                    x, y = tx, ty
-                    moved = True
-                    break
+                if 0 <= tx < w and 0 <= ty < h:
+                    tcell = g[ty, tx]
+                    if tcell in _magma_open:
+                        g[y, x] = EMPTY
+                        g[ty, tx] = MAGMA
+                        c[ty, tx] = col
+                        x, y = tx, ty
+                        moved = True
+                        break
+                    elif tcell in _magma_displace:
+                        fluid_t = g[ty, tx]
+                        fluid_c = c[ty, tx].copy()
+                        g[ty, tx] = MAGMA
+                        c[ty, tx] = col
+                        g[y, x] = fluid_t
+                        c[y, x] = fluid_c
+                        x, y = tx, ty
+                        moved = True
+                        break
 
-        # Random lateral drift
+        # Lateral slide — magma is a thick fluid so it spreads sideways
         if not moved:
-            if random.random() < 0.3:
-                lx = x + (1 if random.random() < 0.5 else -1)
-                if 0 <= lx < w and g[y, lx] == EMPTY:
+            direction = 1 if random.random() < 0.5 else -1
+            lx = x + direction
+            if 0 <= lx < w and g[y, lx] in _magma_open:
+                g[y, x] = EMPTY
+                g[y, lx] = MAGMA
+                c[y, lx] = col
+                x = lx
+                moved = True
+            else:
+                lx = x - direction
+                if 0 <= lx < w and g[y, lx] in _magma_open:
                     g[y, x] = EMPTY
                     g[y, lx] = MAGMA
                     c[y, lx] = col
+                    x = lx
                     moved = True
 
         # Magma lasts even longer than napalm (nearly permanent)
         if random.random() < 0.0003:
             g[y, x] = EMPTY
+
+    # ── Magma leveling pass (thick fluid) ────────────────────────
+    # Like water leveling but only 2 passes (viscous), so magma
+    # pools and spreads outward when piled up.
+    _magma_open_lev = {EMPTY, TUNNEL}
+    for _pass in range(2):
+        for y in range(h - 1, -1, -1):
+            if _pass % 2 == 0:
+                col_range = range(w)
+            else:
+                col_range = range(w - 1, -1, -1)
+
+            for x in col_range:
+                if g[y, x] != MAGMA:
+                    continue
+
+                # Skip if still falling (gravity handles it)
+                below = y + 1
+                if below < h and g[below, x] in _magma_open_lev:
+                    continue
+
+                # Only flow sideways if under pressure (magma above)
+                has_pressure = (y > 0 and g[y - 1, x] == MAGMA)
+
+                d = 1 if random.random() < 0.5 else -1
+                for direction in (d, -d):
+                    nx = x + direction
+                    if nx < 0 or nx >= w:
+                        continue
+                    if g[y, nx] not in _magma_open_lev:
+                        continue
+
+                    target_below = y + 1
+                    drops = (target_below < h and g[target_below, nx] in _magma_open_lev)
+
+                    if not has_pressure and not drops:
+                        # Surface magma — only move to level columns
+                        cur_h = 0
+                        sy = y
+                        while sy >= 0 and g[sy, x] == MAGMA:
+                            cur_h += 1
+                            sy -= 1
+                        nb_h = 0
+                        sy = y
+                        while sy >= 0 and g[sy, nx] == MAGMA:
+                            nb_h += 1
+                            sy -= 1
+                        if cur_h - nb_h < 2:
+                            continue
+
+                    cl = c[y, x]
+                    g[y, x] = EMPTY
+                    g[y, nx] = MAGMA
+                    c[y, nx] = cl
+                    break
 
 
 def _step_steam(state):
@@ -2552,6 +2655,11 @@ class SandWindow:
                     rx = gx + random.randint(-3, 3)
                     ry = gy + random.randint(-2, 2)
                     self._state.add(MAGMA, rx, ry, random.choice(_MAGMA_COLORS))
+            elif self._mode == self.MODE_SEED:
+                for _ in range(5):
+                    rx = gx + random.randint(-2, 2)
+                    ry = gy + random.randint(-2, 1)
+                    self._state.add(SEED, rx, ry, random.choice(_SEED_COLORS))
             elif self._mode == self.MODE_FILL:
                 self._flood_fill(gx, gy)
 
@@ -2778,13 +2886,11 @@ class SandWindow:
             self._last_wall_gx = None
             self._last_wall_gy = None
         elif self._mode == self.MODE_SEED:
-            # Drop just ~5 seeds, scattered loosely
-            if not getattr(self, '_gnome_spawned_this_pinch', False):
-                for _ in range(5):
-                    rx = gx + random.randint(-2, 2)
-                    ry = gy + random.randint(-2, 1)
-                    self._state.add(SEED, rx, ry, random.choice(_SEED_COLORS))
-                self._gnome_spawned_this_pinch = True
+            # Drop a few seeds each frame while dragging
+            for _ in range(5):
+                rx = gx + random.randint(-2, 2)
+                ry = gy + random.randint(-2, 1)
+                self._state.add(SEED, rx, ry, random.choice(_SEED_COLORS))
             self._last_wall_gx = None
             self._last_wall_gy = None
         elif self._mode == self.MODE_WORM:
