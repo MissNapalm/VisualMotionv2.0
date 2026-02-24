@@ -600,6 +600,60 @@ class _Spark:
 
 
 # ────────────────────────────────────────────
+# Buckshot pellet — fired from player's shotgun
+# ────────────────────────────────────────────
+
+_BUCKSHOT_COLORS = [
+    (255, 255, 180), (255, 240, 120), (240, 220, 100),
+    (255, 200, 60), (220, 200, 80),
+]
+
+class _Buckshot:
+    """A single pellet of buckshot. Travels fast in a direction, destroys
+    terrain it hits, and dies on impact or after max range."""
+
+    def __init__(self, x, y, vx, vy):
+        self.x = float(x)
+        self.y = float(y)
+        self.vx = vx
+        self.vy = vy
+        self.color = random.choice(_BUCKSHOT_COLORS)
+        self.alive = True
+        self.life = 0
+
+    def step(self, grid):
+        h, w = grid.shape
+        self.vy += 0.08  # very slight gravity arc
+        self.x += self.vx
+        self.y += self.vy
+        self.life += 1
+        ix, iy = int(self.x), int(self.y)
+        # Die if out of bounds
+        if ix < 0 or ix >= w or iy < 0 or iy >= h:
+            self.alive = False
+            return
+        cell = grid[iy, ix]
+        # Pass through empty, fire, tunnel, water, poison, holywater
+        if cell in (EMPTY, FIRE, NAPALM, TUNNEL, WATER, POISON, HOLYWATER):
+            pass
+        else:
+            # Hit something solid — destroy a small area and die
+            for dx in range(-1, 2):
+                for dy in range(-1, 2):
+                    cx, cy = ix + dx, iy + dy
+                    if 0 <= cx < w and 0 <= cy < h:
+                        c = grid[cy, cx]
+                        # Don't destroy concrete/glass (tough materials)
+                        if c not in (EMPTY, CONCRETE, GLASS, TUNNEL):
+                            grid[cy, cx] = EMPTY
+            self.alive = False
+            return
+        # Die after max range (~60 cells)
+        if self.life > 60:
+            self.alive = False
+
+
+# ────────────────────────────────────────────
 # SplashDrop — water droplet flung upward by an impact
 # ────────────────────────────────────────────
 
@@ -1250,6 +1304,378 @@ _CONFETTI_COLORS = [
 ]
 
 
+# ────────────────────────────────────────────
+# Player — keyboard-controlled character
+# ────────────────────────────────────────────
+
+_PLAYER_WIDTH = 2    # half-width in grid cells
+_PLAYER_HEIGHT = 5   # full height in grid cells
+_PLAYER_GRAVITY = 0.45
+_PLAYER_JUMP_VEL = -3.8
+_PLAYER_MOVE_SPEED = 1.5
+_PLAYER_TERMINAL_VEL = 4.0
+# Grappling hook (ninja rope) constants
+_HOOK_SPEED = 1.8          # projectile travel speed (grid cells/tick) — no gravity, straight line
+_HOOK_PULL_ACCEL = 0.3     # how fast the rope pulls the player
+_HOOK_MAX_PULL_VEL = 1.2   # max speed while being pulled — slower than hook shoot speed
+_HOOK_ROPE_LEN_MIN = 1.5   # stop pulling when this close (arrive)
+_PLAYER_CAMERA_ZOOM = 1.5   # how much the view zooms in when player is active
+
+
+class _Player:
+    """A player-controlled character that responds to WASD + spacebar."""
+
+    def __init__(self, gx, gy):
+        self.gx = float(gx)
+        self.gy = float(gy)
+        self.vx = 0.0
+        self.vy = 0.0
+        self.grounded = False
+        self.alive = True
+        self.dir = 1  # facing direction
+        self.jumps_left = 2   # double-jump counter
+        self.color = (0, 200, 255)
+        self.hat_color = (255, 255, 80)
+        self.on_fire = False
+        self.fire_start_time = 0.0
+        # Input state — set each frame by the key handler
+        self.move_left = False
+        self.move_right = False
+        self.move_down = False
+        self.jump_pressed = False
+        self._jump_consumed = False  # prevents holding spacebar = infinite jump
+        # Grappling hook (ninja rope) — like Liero
+        self.hook_active = False
+        self.hook_x = 0.0
+        self.hook_y = 0.0
+        self.hook_vx = 0.0
+        self.hook_vy = 0.0
+        self.hook_attached = False  # True once hook latches onto solid terrain
+        self.hook_reeling = False   # True = pulling player toward hook
+
+    def step(self, grid):
+        """Physics step — called once per sim tick.
+        Coordinate model: gy = foot-bottom row.  The player body spans
+        rows gy-(_PLAYER_HEIGHT-1) .. gy.  Ground is the first solid
+        row at gy+1.  Player stands ON TOP of ground (feet at gy, ground
+        at gy+1)."""
+        h, w = grid.shape
+        ix, iy = int(self.gx), int(self.gy)
+
+        if ix < 0 or ix >= w or iy < 0 or iy >= h:
+            self.alive = False
+            return
+
+        # ── Check for fire/napalm/magma contact ──
+        if not self.on_fire:
+            for dx in range(-_PLAYER_WIDTH, _PLAYER_WIDTH + 1):
+                for dy in range(-_PLAYER_HEIGHT + 1, 1):
+                    cx, cy = ix + dx, iy + dy
+                    if 0 <= cx < w and 0 <= cy < h and grid[cy, cx] in (FIRE, NAPALM, MAGMA):
+                        self.on_fire = True
+                        self.fire_start_time = time.time()
+                        break
+                if self.on_fire:
+                    break
+        # Water extinguishes
+        if self.on_fire and 0 <= ix < w and 0 <= iy < h and grid[iy, ix] == WATER:
+            self.on_fire = False
+        # Die after 4 seconds on fire
+        if self.on_fire and (time.time() - self.fire_start_time) > 4.0:
+            self.alive = False
+            return
+
+        # ── Horizontal movement ──
+        if self.move_left:
+            self.vx = -_PLAYER_MOVE_SPEED
+            self.dir = -1
+        elif self.move_right:
+            self.vx = _PLAYER_MOVE_SPEED
+            self.dir = 1
+        else:
+            self.vx = 0.0
+
+        # ── Jump ──
+        if self.jump_pressed and not self._jump_consumed and self.jumps_left > 0:
+            self.vy = _PLAYER_JUMP_VEL
+            self.jumps_left -= 1
+            self.grounded = False
+            self._jump_consumed = True
+        if not self.jump_pressed:
+            self._jump_consumed = False
+
+        # ── Gravity ──
+        grav = _PLAYER_GRAVITY
+        if self.move_down:
+            grav *= 2.5  # fast-fall when holding S
+        self.vy = min(self.vy + grav, _PLAYER_TERMINAL_VEL)
+
+        _passable = (EMPTY, FIRE, NAPALM, WATER, POISON, HOLYWATER, TUNNEL)
+
+        def _solid(cy, cx):
+            return (0 <= cx < w and 0 <= cy < h and
+                    grid[cy, cx] not in _passable)
+
+        def _body_clear(gx, gy):
+            """Return True if the player body fits at (gx, gy) without
+            overlapping any solid cell."""
+            fix = int(gx)
+            fiy = int(gy)
+            for dy in range(-_PLAYER_HEIGHT + 1, 1):
+                cy = fiy + dy
+                for dx in range(-_PLAYER_WIDTH + 1, _PLAYER_WIDTH):
+                    cx = fix + dx
+                    if _solid(cy, cx):
+                        return False
+            return True
+
+        # ── Move X ──
+        new_gx = self.gx + self.vx
+        if self.vx != 0.0:
+            if _body_clear(new_gx, self.gy):
+                self.gx = new_gx
+            else:
+                # Try stepping up 1 cell (walk over small bumps)
+                if _body_clear(new_gx, self.gy - 1.0):
+                    self.gx = new_gx
+                    self.gy -= 1.0
+                else:
+                    self.vx = 0.0
+
+        # ── Move Y ──
+        new_gy = self.gy + self.vy
+        on_ground = False
+        if self.vy >= 0:
+            # Falling or still — scan EVERY row between current and target
+            # to prevent skipping through thin ground at high velocities
+            start_iy = int(self.gy)
+            end_iy = int(new_gy)
+            # Ensure we scan at least one row even for small movements
+            landed_y = None
+            fix = int(self.gx)
+            scan_from = max(0, start_iy)
+            scan_to = min(h - 2, end_iy)  # -2 because we check foot_below = y+1
+            for test_y in range(scan_from, scan_to + 1):
+                foot_below = test_y + 1
+                if foot_below >= h:
+                    landed_y = float(h - 2)
+                    break
+                for dx in range(-_PLAYER_WIDTH + 1, _PLAYER_WIDTH):
+                    if _solid(foot_below, fix + dx):
+                        landed_y = float(test_y)
+                        break
+                if landed_y is not None:
+                    break
+            if landed_y is not None:
+                new_gy = landed_y
+                on_ground = True
+            # Also make sure we didn't clip INTO a solid cell
+            if not _body_clear(self.gx, new_gy):
+                # Push upward until clear
+                for nudge in range(1, _PLAYER_HEIGHT + 4):
+                    if _body_clear(self.gx, new_gy - nudge):
+                        new_gy -= nudge
+                        on_ground = True
+                        break
+        else:
+            # Rising — scan row by row upward to avoid clipping through ceilings
+            start_iy = int(self.gy)
+            end_iy = int(new_gy)
+            blocked = False
+            for test_y in range(start_iy, max(-1, end_iy - 1), -1):
+                if not _body_clear(self.gx, float(test_y)):
+                    # Hit ceiling — stop just below
+                    new_gy = float(test_y + 1)
+                    self.vy = 0.0
+                    blocked = True
+                    break
+            if not blocked:
+                # Check final destination too
+                if not _body_clear(self.gx, new_gy):
+                    self.vy = 0.0
+                    new_gy = self.gy
+
+        self.gy = new_gy
+        if on_ground:
+            self.vy = 0.0
+            self.grounded = True
+            self.jumps_left = 2
+        else:
+            self.grounded = False
+
+        # ── Grappling hook physics ──
+        if self.hook_active:
+            if not self.hook_attached:
+                # Hook is flying — straight line, no gravity
+                self.hook_x += self.hook_vx
+                self.hook_y += self.hook_vy
+                hix, hiy = int(self.hook_x), int(self.hook_y)
+                # Out of bounds — deactivate
+                if hix < 0 or hix >= w or hiy < 0 or hiy >= h:
+                    self.hook_active = False
+                elif grid[hiy, hix] not in _passable:
+                    # Hit solid terrain — latch on!
+                    self.hook_attached = True
+                    self.hook_reeling = True
+            else:
+                # Hook is attached — pull player straight to the hook point
+                if self.hook_reeling:
+                    dx = self.hook_x - self.gx
+                    dy = self.hook_y - self.gy
+                    rope_len = math.hypot(dx, dy)
+                    if rope_len < _HOOK_ROPE_LEN_MIN:
+                        # Arrived at hook point — snap there and detach
+                        if _body_clear(self.hook_x, self.hook_y):
+                            self.gx = self.hook_x
+                            self.gy = self.hook_y
+                        self.vx = 0.0
+                        self.vy = 0.0
+                        self.hook_active = False
+                        self.hook_attached = False
+                        self.hook_reeling = False
+                        self.grounded = False
+                    else:
+                        # Move player directly toward hook point
+                        nx = dx / rope_len
+                        ny = dy / rope_len
+                        # Set velocity straight toward hook
+                        pull_speed = min(_HOOK_MAX_PULL_VEL, rope_len)
+                        self.vx = nx * pull_speed
+                        self.vy = ny * pull_speed
+                        # Cancel gravity entirely while being pulled
+                        self.vy -= grav
+                        # Apply movement
+                        rope_gx = self.gx + self.vx
+                        rope_gy = self.gy + self.vy
+                        if _body_clear(rope_gx, rope_gy):
+                            self.gx = rope_gx
+                            self.gy = rope_gy
+                            self.grounded = False
+                        elif _body_clear(rope_gx, self.gy):
+                            self.gx = rope_gx
+                        elif _body_clear(self.gx, rope_gy):
+                            self.gy = rope_gy
+
+        # ── Final anti-clip: if body is stuck in solid, push up ──
+        if not _body_clear(self.gx, self.gy):
+            for nudge in range(1, _PLAYER_HEIGHT + 4):
+                if _body_clear(self.gx, self.gy - nudge):
+                    self.gy -= nudge
+                    self.grounded = False
+                    break
+
+    def shoot(self, target_wx, target_wy, buckshots_list):
+        """Fire a burst of buckshot pellets toward (target_wx, target_wy) in
+        world-pixel coordinates.  Pellets originate from the player's chest."""
+        # Player chest position in grid coords
+        chest_gx = self.gx
+        chest_gy = self.gy - _PLAYER_HEIGHT * 0.4
+        # Direction to target (in grid coords)
+        tgx = target_wx / _CELL
+        tgy = target_wy / _CELL
+        dx = tgx - chest_gx
+        dy = tgy - chest_gy
+        dist = math.hypot(dx, dy)
+        if dist < 0.1:
+            dx, dy = float(self.dir), 0.0
+            dist = 1.0
+        dx /= dist
+        dy /= dist
+        # Update facing direction
+        self.dir = 1 if dx >= 0 else -1
+        # Spawn 6-10 pellets in a spread
+        n_pellets = random.randint(6, 10)
+        base_speed = 5.0
+        spread = 0.18  # radians (~10 degrees)
+        base_angle = math.atan2(dy, dx)
+        for _ in range(n_pellets):
+            a = base_angle + random.uniform(-spread, spread)
+            spd = base_speed + random.uniform(-0.8, 0.8)
+            pvx = math.cos(a) * spd
+            pvy = math.sin(a) * spd
+            buckshots_list.append(_Buckshot(chest_gx, chest_gy, pvx, pvy))
+
+    def fire_hook(self, target_wx, target_wy):
+        """Launch grappling hook toward (target_wx, target_wy) world-pixel coords."""
+        # Origin: player head
+        head_gx = self.gx
+        head_gy = self.gy - _PLAYER_HEIGHT + 1
+        tgx = target_wx / _CELL
+        tgy = target_wy / _CELL
+        dx = tgx - head_gx
+        dy = tgy - head_gy
+        dist = math.hypot(dx, dy)
+        if dist < 0.1:
+            dx, dy = float(self.dir), -1.0
+            dist = math.hypot(dx, dy)
+        dx /= dist
+        dy /= dist
+        self.hook_active = True
+        self.hook_attached = False
+        self.hook_reeling = False
+        self.hook_x = head_gx + dx * 2.0  # start slightly ahead of player
+        self.hook_y = head_gy + dy * 2.0
+        self.hook_vx = dx * _HOOK_SPEED
+        self.hook_vy = dy * _HOOK_SPEED
+
+    def release_hook(self):
+        """Release the grappling hook."""
+        self.hook_active = False
+        self.hook_attached = False
+        self.hook_reeling = False
+
+    def draw(self, surface, cam_ox, cam_oy, cam_zoom):
+        """Draw the player as a red square."""
+        z = cam_zoom
+        # Player body rectangle in screen coords
+        pw = max(4, int(_PLAYER_WIDTH * 2 * _CELL * z))
+        ph = max(4, int(_PLAYER_HEIGHT * _CELL * z))
+        sx = int((self.gx * _CELL + _CELL // 2) * z + cam_ox) - pw // 2
+        sy = int(((self.gy - _PLAYER_HEIGHT + 1) * _CELL) * z + cam_oy)
+        # Center for hook line / label
+        cx = sx + pw // 2
+        cy = sy + ph // 2
+
+        # Pick color
+        if self.on_fire:
+            col = random.choice([(255, 80, 0), (255, 0, 0), (255, 180, 0)])
+        else:
+            col = (220, 30, 30)  # red
+
+        pygame.draw.rect(surface, col, (sx, sy, pw, ph))
+        # Darker outline
+        pygame.draw.rect(surface, (150, 15, 15), (sx, sy, pw, ph), max(1, int(1 * z)))
+
+        # Fire particles when on fire
+        if self.on_fire:
+            for _ in range(5):
+                fx = cx + random.randint(int(-10 * z), int(10 * z))
+                fy = cy + random.randint(int(-8 * z), int(8 * z))
+                pygame.draw.circle(surface, random.choice(_FIRE_COLORS),
+                                   (fx, fy), random.randint(2, max(3, int(5 * z))))
+
+        # Grappling hook line (if active)
+        if self.hook_active:
+            hook_sx = int((self.hook_x * _CELL + _CELL // 2) * z + cam_ox)
+            hook_sy = int((self.hook_y * _CELL + _CELL // 2) * z + cam_oy)
+            pygame.draw.line(surface, (180, 160, 100), (cx, cy), (hook_sx, hook_sy), max(1, int(2 * z)))
+            pygame.draw.circle(surface, (200, 180, 100), (hook_sx, hook_sy), max(2, int(3 * z)))
+            if self.hook_attached:
+                anch = max(2, int(4 * z))
+                pygame.draw.line(surface, (255, 220, 120),
+                                 (hook_sx - anch, hook_sy), (hook_sx + anch, hook_sy), max(1, int(2 * z)))
+                pygame.draw.line(surface, (255, 220, 120),
+                                 (hook_sx, hook_sy - anch), (hook_sx, hook_sy + anch), max(1, int(2 * z)))
+
+        # "P1" label above
+        fs = max(16, int(22 * z))
+        if not hasattr(self, '_label_font') or self._label_font_size != fs:
+            self._label_font = pygame.font.Font(None, fs)
+            self._label_font_size = fs
+        lbl = self._label_font.render("P1", True, (255, 255, 80))
+        surface.blit(lbl, (cx - lbl.get_width() // 2, sy - int(14 * z)))
+
+
 class _SandState:
     """NumPy grid-based sand sim. Much faster than dict."""
 
@@ -1343,6 +1769,7 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False, splash_dr
 
         # Dirt cannot fall into TUNNEL cells (tunnels hold their shape);
         # everything else treats TUNNEL as open space.
+        # Dirt does not fall through FIRE/NAPALM (burning supports material above).
         def _is_open(cy, cx):
             """Return True if cell (cy,cx) is open space this particle can move into."""
             cell = g[cy, cx]
@@ -1600,6 +2027,7 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False, splash_dr
 def _step_fire(state):
     """Physics step for fire particles: rise upward, spread, consume."""
     _FIRE_MAX_AGE = 54    # ~1.5 seconds at 36 fps
+    _FIRE_MAX_AGE_FUEL = 120   # ~3.3 seconds — fire near wood/dirt lingers
     _FIRE_MAX_AGE_PLANT = 144  # ~4 seconds — fire on burning plants lingers
     g = state.grid
     c = state.colors
@@ -1664,7 +2092,7 @@ def _step_fire(state):
                     extinguished = True
                     break
                 elif cell == WOOD:
-                    if random.random() < 0.018:      # wood burns moderate
+                    if random.random() < 0.06:       # wood catches fire readily
                         g[ny2, nx] = FIRE
                         c[ny2, nx] = random.choice(_FIRE_COLORS)
                 elif cell == PLANT:
@@ -1672,7 +2100,7 @@ def _step_fire(state):
                         g[ny2, nx] = FIRE
                         c[ny2, nx] = random.choice(_FIRE_COLORS)
                 elif cell == DIRT:
-                    if random.random() < 0.025:      # dirt burns faster than wood
+                    if random.random() < 0.07:       # dirt ignites easily
                         g[ny2, nx] = FIRE
                         c[ny2, nx] = random.choice(_FIRE_COLORS)
                 elif cell == HEAVY:
@@ -1697,10 +2125,15 @@ def _step_fire(state):
             continue
 
         # Fire rises upward (opposite of sand)
+        # BUT: if there is dirt/wood directly above, fire stays in place
+        # to act as structural support while burning the fuel above.
         ny = y - 1
         moved = False
 
-        if 0 <= ny < h and g[ny, x] == EMPTY:
+        # Check if fuel is directly above — anchor the fire
+        fuel_above = (0 <= ny < h and g[ny, x] in (WOOD, DIRT))
+
+        if not fuel_above and 0 <= ny < h and g[ny, x] == EMPTY:
             fa[ny, x] = fa[y, x]
             fa[y, x] = 0
             g[y, x] = EMPTY
@@ -1709,21 +2142,22 @@ def _step_fire(state):
             y = ny
             moved = True
         else:
-            # Try diagonal up-left/up-right
-            if random.random() < 0.5:
-                tries = [(x - 1, ny), (x + 1, ny)]
-            else:
-                tries = [(x + 1, ny), (x - 1, ny)]
-            for tx, ty in tries:
-                if 0 <= tx < w and 0 <= ty < h and g[ty, tx] == EMPTY:
-                    fa[ty, tx] = fa[y, x]
-                    fa[y, x] = 0
-                    g[y, x] = EMPTY
-                    g[ty, tx] = FIRE
-                    c[ty, tx] = col
-                    x, y = tx, ty
-                    moved = True
-                    break
+            # Try diagonal up-left/up-right (only if no fuel anchoring)
+            if not fuel_above:
+                if random.random() < 0.5:
+                    tries = [(x - 1, ny), (x + 1, ny)]
+                else:
+                    tries = [(x + 1, ny), (x - 1, ny)]
+                for tx, ty in tries:
+                    if 0 <= tx < w and 0 <= ty < h and g[ty, tx] == EMPTY:
+                        fa[ty, tx] = fa[y, x]
+                        fa[y, x] = 0
+                        g[y, x] = EMPTY
+                        g[ty, tx] = FIRE
+                        c[ty, tx] = col
+                        x, y = tx, ty
+                        moved = True
+                        break
 
         # Random lateral drift
         if not moved:
@@ -1738,15 +2172,25 @@ def _step_fire(state):
                     moved = True
 
         # Fire has a chance to die out — ramps up aggressively with age
-        # Fire adjacent to plant uses a much longer lifetime (burns slowly)
+        # Fire adjacent to fuel (plant/wood/dirt) uses a longer lifetime
         age = fa[y, x]
         near_plant = False
+        near_fuel = False
         for dx2, dy2 in ((-1,0),(1,0),(0,-1),(0,1)):
             nx2, ny2 = x + dx2, y + dy2
-            if 0 <= nx2 < w and 0 <= ny2 < h and g[ny2, nx2] == PLANT:
-                near_plant = True
-                break
-        max_age = _FIRE_MAX_AGE_PLANT if near_plant else _FIRE_MAX_AGE
+            if 0 <= nx2 < w and 0 <= ny2 < h:
+                nc = g[ny2, nx2]
+                if nc == PLANT:
+                    near_plant = True
+                    break
+                elif nc in (WOOD, DIRT):
+                    near_fuel = True
+        if near_plant:
+            max_age = _FIRE_MAX_AGE_PLANT
+        elif near_fuel:
+            max_age = _FIRE_MAX_AGE_FUEL
+        else:
+            max_age = _FIRE_MAX_AGE
         die_chance = 0.08 + (age / max_age) * 0.80
         if random.random() < die_chance:
             g[y, x] = EMPTY
@@ -1798,7 +2242,7 @@ def _step_napalm(state):
                     extinguished = True
                     break
                 elif cell == WOOD:
-                    if random.random() < 0.018:
+                    if random.random() < 0.06:
                         g[ny2, nx] = FIRE
                         c[ny2, nx] = random.choice(_FIRE_COLORS)
                 elif cell == PLANT:
@@ -1806,7 +2250,7 @@ def _step_napalm(state):
                         g[ny2, nx] = FIRE
                         c[ny2, nx] = random.choice(_FIRE_COLORS)
                 elif cell == DIRT:
-                    if random.random() < 0.025:
+                    if random.random() < 0.07:
                         g[ny2, nx] = FIRE
                         c[ny2, nx] = random.choice(_FIRE_COLORS)
                 elif cell == HEAVY or cell == STATIC:
@@ -1951,7 +2395,7 @@ def _step_magma(state):
                             g[ny2, nx] = STEAM
                             c[ny2, nx] = random.choice(_STEAM_COLORS)
                     elif cell == WOOD:
-                        if random.random() < 0.018:
+                        if random.random() < 0.06:
                             g[ny2, nx] = FIRE
                             c[ny2, nx] = random.choice(_FIRE_COLORS)
                     elif cell == PLANT:
@@ -1959,7 +2403,7 @@ def _step_magma(state):
                             g[ny2, nx] = FIRE
                             c[ny2, nx] = random.choice(_FIRE_COLORS)
                     elif cell == DIRT:
-                        if random.random() < 0.025:
+                        if random.random() < 0.07:
                             g[ny2, nx] = FIRE
                             c[ny2, nx] = random.choice(_FIRE_COLORS)
                     elif cell == HEAVY:
@@ -2280,6 +2724,7 @@ class SandWindow:
         self._gnomes = []
         self._gibs = []
         self._sparks = []
+        self._buckshots = []
         self._splash_drops = []
         self._vine_tips = []
         self._worms = []
@@ -2298,140 +2743,161 @@ class SandWindow:
         self._font_title = pygame.font.Font(None, 36)
         self._sim_tick = 0               # frame counter for sim stepping
         self._menu_open = False          # collapsible tool menu
+        self._player = None              # player-controlled character (_Player or None)
+        self._cam_zoom = 1.0             # current camera zoom (smoothed)
+        self._cam_target_zoom = 1.0      # target camera zoom
+        self._cam_x = 0.0                # camera offset X (pixels, smoothed)
+        self._cam_y = 0.0                # camera offset Y (pixels, smoothed)
         self._buttons = []
         self._menu_buttons = []          # buttons only visible when menu is open
         self._build_buttons()
 
     def _build_buttons(self):
-        bw = 82
-        bh = 40
-        margin = 4
-
-        # ── Menu toggle button — always visible, top-left ──
-        self._btn_menu = _Button(margin, margin, 82, 40, "☰ SND", font_size=22,
+        # ── Centered menu grid: 6 columns × 6 rows ──
+        cols = 6
+        rows = 6
+        margin = 6
+        # Menu toggle button — top-left corner, big and pinchable
+        menu_w = 140
+        menu_h = 70
+        self._btn_menu = _Button(margin, margin, menu_w, menu_h,
+                                 "☰ SND", font_size=36,
                                  color=(60, 60, 80), active_color=(100, 200, 150))
 
-        # ── Grid of tool buttons — shown only when menu is open ──
-        # Layout: columns flowing left to right, rows top to bottom
-        # Starting below the menu button
-        panel_x = margin
-        panel_y = margin + 44
+        # ── Grid of tool buttons — centered, ~70% of screen ──
+        bw = 150
+        bh = 80
+        grid_w = cols * bw + (cols - 1) * margin
+        grid_h = rows * bh + (rows - 1) * margin
+        ox = (self._ww - grid_w) // 2   # center horizontally
+        oy = (self._wh - grid_h) // 2   # center vertically
+        # Store panel rect for click-outside detection
+        self._menu_panel_rect = pygame.Rect(ox - margin, oy - margin,
+                                            grid_w + margin * 2, grid_h + margin * 2)
 
         def _place(row, col):
-            return (panel_x + col * (bw + margin),
-                    panel_y + row * (bh + margin))
+            return (ox + col * (bw + margin),
+                    oy + row * (bh + margin))
+
+        fs = 32  # font size for all menu items
 
         # Row 0 — Materials
         r, c = 0, 0
         x, y = _place(r, c)
-        self._btn_pour = _Button(x, y, bw, bh, "SAND", font_size=22); c += 1
+        self._btn_pour = _Button(x, y, bw, bh, "SAND", font_size=fs); c += 1
         x, y = _place(r, c)
-        self._btn_dirt = _Button(x, y, bw, bh, "DIRT", font_size=22,
+        self._btn_dirt = _Button(x, y, bw, bh, "DIRT", font_size=fs,
                                  color=(60, 40, 20), active_color=(140, 90, 45)); c += 1
         x, y = _place(r, c)
-        self._btn_water = _Button(x, y, bw, bh, "WATER", font_size=22,
+        self._btn_water = _Button(x, y, bw, bh, "WATER", font_size=fs,
                                   color=(15, 50, 120), active_color=(40, 130, 255)); c += 1
         x, y = _place(r, c)
-        self._btn_wood = _Button(x, y, bw, bh, "WOOD", font_size=22,
+        self._btn_wood = _Button(x, y, bw, bh, "WOOD", font_size=fs,
                                  color=(70, 45, 20), active_color=(180, 120, 60)); c += 1
         x, y = _place(r, c)
-        self._btn_concrete = _Button(x, y, bw, bh, "CONCRT", font_size=20,
+        self._btn_concrete = _Button(x, y, bw, bh, "CONCRT", font_size=fs,
                                      color=(60, 60, 65), active_color=(160, 160, 170)); c += 1
         x, y = _place(r, c)
-        self._btn_ice = _Button(x, y, bw, bh, "ICE", font_size=22,
+        self._btn_ice = _Button(x, y, bw, bh, "ICE", font_size=fs,
                                 color=(60, 90, 120), active_color=(180, 220, 255)); c += 1
 
         # Row 1 — Fire / explosives
         r, c = 1, 0
         x, y = _place(r, c)
-        self._btn_fire = _Button(x, y, bw, bh, "FIRE", font_size=22,
+        self._btn_fire = _Button(x, y, bw, bh, "FIRE", font_size=fs,
                                  color=(80, 30, 0), active_color=(255, 120, 0)); c += 1
         x, y = _place(r, c)
-        self._btn_napalm = _Button(x, y, bw, bh, "NAPLM", font_size=20,
+        self._btn_napalm = _Button(x, y, bw, bh, "NAPLM", font_size=fs,
                                    color=(120, 30, 0), active_color=(255, 60, 0)); c += 1
         x, y = _place(r, c)
-        self._btn_magma = _Button(x, y, bw, bh, "MAGMA", font_size=20,
+        self._btn_magma = _Button(x, y, bw, bh, "MAGMA", font_size=fs,
                                   color=(120, 40, 0), active_color=(255, 100, 0)); c += 1
         x, y = _place(r, c)
-        self._btn_gasoline = _Button(x, y, bw, bh, "GAS", font_size=22,
+        self._btn_gasoline = _Button(x, y, bw, bh, "GAS", font_size=fs,
                                      color=(70, 80, 20), active_color=(200, 220, 60)); c += 1
         x, y = _place(r, c)
-        self._btn_gunpowder = _Button(x, y, bw, bh, "GUNPW", font_size=20,
+        self._btn_gunpowder = _Button(x, y, bw, bh, "GUNPW", font_size=fs,
                                       color=(50, 50, 50), active_color=(120, 120, 120)); c += 1
         x, y = _place(r, c)
-        self._btn_match = _Button(x, y, bw, bh, "MATCH", font_size=20,
+        self._btn_match = _Button(x, y, bw, bh, "MATCH", font_size=fs,
                                   color=(100, 50, 10), active_color=(255, 140, 30)); c += 1
 
         # Row 2 — Special / creatures
         r, c = 2, 0
         x, y = _place(r, c)
-        self._btn_gnome = _Button(x, y, bw, bh, "GNOME", font_size=22); c += 1
+        self._btn_gnome = _Button(x, y, bw, bh, "GNOME", font_size=fs); c += 1
         x, y = _place(r, c)
-        self._btn_confetti = _Button(x, y, bw, bh, "CONFTI", font_size=20,
+        self._btn_confetti = _Button(x, y, bw, bh, "CONFTI", font_size=fs,
                                      color=(100, 40, 100), active_color=(255, 100, 255)); c += 1
         x, y = _place(r, c)
-        self._btn_poison = _Button(x, y, bw, bh, "ZOMBI", font_size=20,
+        self._btn_poison = _Button(x, y, bw, bh, "ZOMBI", font_size=fs,
                                    color=(20, 80, 10), active_color=(50, 200, 30)); c += 1
         x, y = _place(r, c)
-        self._btn_holywater = _Button(x, y, bw, bh, "HOLY", font_size=22,
+        self._btn_holywater = _Button(x, y, bw, bh, "HOLY", font_size=fs,
                                       color=(80, 80, 130), active_color=(200, 200, 255)); c += 1
         x, y = _place(r, c)
-        self._btn_money = _Button(x, y, bw, bh, "MONEY", font_size=20,
+        self._btn_money = _Button(x, y, bw, bh, "MONEY", font_size=fs,
                                   color=(20, 80, 20), active_color=(60, 200, 60)); c += 1
         x, y = _place(r, c)
-        self._btn_bomb = _Button(x, y, bw, bh, "BOMB", font_size=22,
+        self._btn_bomb = _Button(x, y, bw, bh, "BOMB", font_size=fs,
                                  color=(50, 50, 50), active_color=(255, 80, 0)); c += 1
 
         # Row 3 — Tools / actions
         r, c = 3, 0
         x, y = _place(r, c)
-        self._btn_hand = _Button(x, y, bw, bh, "HAND", font_size=22,
+        self._btn_hand = _Button(x, y, bw, bh, "HAND", font_size=fs,
                                  color=(80, 60, 40), active_color=(220, 180, 120)); c += 1
         x, y = _place(r, c)
-        self._btn_erase = _Button(x, y, bw, bh, "ERASE", font_size=22); c += 1
+        self._btn_erase = _Button(x, y, bw, bh, "ERASE", font_size=fs); c += 1
         x, y = _place(r, c)
-        self._btn_fill = _Button(x, y, bw, bh, "FILL", font_size=22,
+        self._btn_fill = _Button(x, y, bw, bh, "FILL", font_size=fs,
                                  color=(50, 50, 80), active_color=(120, 180, 255)); c += 1
         x, y = _place(r, c)
-        self._btn_firebomb = _Button(x, y, bw, bh, "FBOMB", font_size=20,
+        self._btn_firebomb = _Button(x, y, bw, bh, "FBOMB", font_size=fs,
                                      color=(120, 30, 0), active_color=(255, 80, 0)); c += 1
         x, y = _place(r, c)
-        self._btn_color = _Button(x, y, bw, bh, "COLOR", font_size=22); c += 1
+        self._btn_color = _Button(x, y, bw, bh, "COLOR", font_size=fs); c += 1
         x, y = _place(r, c)
-        self._btn_clear = _Button(x, y, bw, bh, "CLEAR", font_size=22); c += 1
+        self._btn_clear = _Button(x, y, bw, bh, "CLEAR", font_size=fs); c += 1
 
         # Row 4 — Settings
         r, c = 4, 0
         x, y = _place(r, c)
-        self._btn_wind = _Button(x, y, bw, bh, "WIND", font_size=22); c += 1
+        self._btn_wind = _Button(x, y, bw, bh, "WIND", font_size=fs); c += 1
         x, y = _place(r, c)
-        self._btn_wind_dir = _Button(x, y, bw, bh, "WIND>", font_size=20); c += 1
+        self._btn_wind_dir = _Button(x, y, bw, bh, "WIND>", font_size=fs); c += 1
         x, y = _place(r, c)
-        self._btn_gravity = _Button(x, y, bw, bh, "GRAV", font_size=22); c += 1
+        self._btn_gravity = _Button(x, y, bw, bh, "GRAV", font_size=fs); c += 1
         x, y = _place(r, c)
-        self._btn_slow = _Button(x, y, bw, bh, "SLOW", font_size=22,
+        self._btn_slow = _Button(x, y, bw, bh, "SLOW", font_size=fs,
                                  color=(30, 60, 100), active_color=(80, 160, 255)); c += 1
         x, y = _place(r, c)
-        self._btn_fast = _Button(x, y, bw, bh, "FAST", font_size=22,
+        self._btn_fast = _Button(x, y, bw, bh, "FAST", font_size=fs,
                                  color=(100, 60, 30), active_color=(255, 160, 80)); c += 1
         x, y = _place(r, c)
-        self._btn_quit = _Button(x, y, bw, bh, "QUIT", font_size=22,
+        self._btn_quit = _Button(x, y, bw, bh, "QUIT", font_size=fs,
                                  color=(120, 30, 30), active_color=(255, 60, 60)); c += 1
 
         # Row 5 — Nature
         r, c = 5, 0
         x, y = _place(r, c)
-        self._btn_seed = _Button(x, y, bw, bh, "SEED", font_size=22,
+        self._btn_seed = _Button(x, y, bw, bh, "SEED", font_size=fs,
                                  color=(60, 40, 10), active_color=(140, 95, 30)); c += 1
         x, y = _place(r, c)
-        self._btn_worm = _Button(x, y, bw, bh, "WORM", font_size=22,
+        self._btn_worm = _Button(x, y, bw, bh, "WORM", font_size=fs,
                                  color=(120, 70, 90), active_color=(220, 140, 160)); c += 1
         x, y = _place(r, c)
-        self._btn_glass = _Button(x, y, bw, bh, "GLASS", font_size=20,
+        self._btn_glass = _Button(x, y, bw, bh, "GLASS", font_size=fs,
                                   color=(80, 110, 130), active_color=(180, 220, 240)); c += 1
         x, y = _place(r, c)
-        self._btn_bee = _Button(x, y, bw, bh, "BEES", font_size=22,
+        self._btn_bee = _Button(x, y, bw, bh, "BEES", font_size=fs,
                                 color=(120, 100, 20), active_color=(240, 210, 40)); c += 1
+        x, y = _place(r, c)
+        self._btn_player1 = _Button(x, y, bw, bh, "P1", font_size=fs,
+                                    color=(0, 80, 120), active_color=(0, 200, 255)); c += 1
+        x, y = _place(r, c)
+        self._btn_close_menu = _Button(x, y, bw, bh, "✕ CLOSE", font_size=fs,
+                                       color=(100, 30, 30), active_color=(255, 80, 80))
 
         # Menu buttons — only visible when menu is open
         self._menu_buttons = [
@@ -2447,6 +2913,8 @@ class SandWindow:
             self._btn_slow, self._btn_fast, self._btn_quit,
             self._btn_seed, self._btn_worm,
             self._btn_glass, self._btn_bee,
+            self._btn_player1,
+            self._btn_close_menu,
         ]
 
         # All buttons = menu toggle + menu items
@@ -2470,6 +2938,7 @@ class SandWindow:
         self._gnomes = []
         self._gibs = []
         self._sparks = []
+        self._buckshots = []
         self._splash_drops = []
         self._vine_tips = []
         self._worms = []
@@ -2482,6 +2951,11 @@ class SandWindow:
         self._line_start_gx = None
         self._line_start_gy = None
         self._menu_open = False
+        self._player = None
+        self._cam_zoom = 1.0
+        self._cam_target_zoom = 1.0
+        self._cam_x = 0.0
+        self._cam_y = 0.0
         self._update_button_states()
 
     def close(self):
@@ -2643,6 +3117,15 @@ class SandWindow:
                 return True
         return False
 
+    def _screen_to_world(self, px, py):
+        """Convert screen pixel coords to world pixel coords (inverse camera)."""
+        cz = self._cam_zoom
+        if cz > 1.01:
+            wx = (px - self._cam_x) / cz
+            wy = (py - self._cam_y) / cz
+            return wx, wy
+        return px, py
+
     def handle_tap(self, px, py):
         # Menu toggle — always active
         if self._btn_menu.hit(px, py):
@@ -2651,6 +3134,10 @@ class SandWindow:
             return
         # If menu is open, check menu buttons
         if self._menu_open:
+            if self._btn_close_menu.hit(px, py):
+                self._menu_open = False
+                self._btn_menu.active = False
+                return
             if self._btn_quit.hit(px, py):
                 self.close()
                 print("Closed Sand (quit button)")
@@ -2743,6 +3230,16 @@ class SandWindow:
             if self._btn_bee.hit(px, py):
                 self._mode = self.MODE_BEE
                 self._update_button_states(); return
+            if self._btn_player1.hit(px, py):
+                # Spawn player at center-top of screen
+                spawn_gx = self._gw // 2
+                spawn_gy = 10
+                self._player = _Player(spawn_gx, spawn_gy)
+                self._cam_target_zoom = _PLAYER_CAMERA_ZOOM
+                self._menu_open = False
+                self._btn_menu.active = False
+                print("Player 1 spawned!")
+                return
             if self._btn_color.hit(px, py):
                 self.random_color()
                 self._update_button_states(); return
@@ -2766,12 +3263,15 @@ class SandWindow:
                 self._gnomes = []
                 self._gibs = []
                 self._sparks = []
+                self._buckshots = []
                 self._splash_drops = []
                 self._vine_tips = []
                 self._worms = []
                 self._bees = []
                 self._bombs = []
                 self._poison_settle = {}
+                self._player = None
+                self._cam_target_zoom = 1.0
                 self._menu_open = False; self._btn_menu.active = False
                 return
             # Click outside menu panel closes it
@@ -2779,6 +3279,8 @@ class SandWindow:
             self._btn_menu.active = False
             return
         # Menu is closed — canvas interaction
+        # Transform screen coords to world coords (inverse camera transform)
+        px, py = self._screen_to_world(px, py)
         if not self._in_ui_zone(px, py):
             # Check if clicking on a parachute — destroy it regardless of mode
             if self._try_destroy_parachute(px, py):
@@ -2911,6 +3413,8 @@ class SandWindow:
                     self._bees.append(_Bee(gx, gy))
 
     def handle_pinch(self, px, py):
+        # Transform screen coords to world coords (inverse camera transform)
+        px, py = self._screen_to_world(px, py)
         if self._in_ui_zone(px, py):
             self._last_wall_gx = None
             self._last_wall_gy = None
@@ -3177,6 +3681,8 @@ class SandWindow:
 
     def handle_double_click(self, px, py):
         """Double-click line tool: first click sets start, second draws line."""
+        # Transform screen coords to world coords (inverse camera transform)
+        px, py = self._screen_to_world(px, py)
         if self._in_ui_zone(px, py):
             return
         # Only works for solid painting modes
@@ -3250,6 +3756,37 @@ class SandWindow:
         if self._mode not in (self.MODE_ERASE, self.MODE_GNOME, self.MODE_HAND, self.MODE_FILL, self.MODE_CONFETTI, self.MODE_POISON, self.MODE_HOLYWATER, self.MODE_ICE, self.MODE_BOMB, self.MODE_FIREBOMB, self.MODE_MONEY, self.MODE_MATCH, self.MODE_MAGMA, self.MODE_SEED, self.MODE_WORM, self.MODE_BEE):
             self._fill_material = self._mode
         self._update_button_states()
+
+    def handle_key(self, key, down):
+        """Handle keyboard input for the player character.
+        key = pygame key constant, down = True for press, False for release."""
+        if self._player is None or not self._player.alive:
+            return
+        if key == pygame.K_a:
+            self._player.move_left = down
+        elif key == pygame.K_d:
+            self._player.move_right = down
+        elif key == pygame.K_s:
+            self._player.move_down = down
+        elif key == pygame.K_w:
+            # W can also jump (alternative to spacebar)
+            self._player.jump_pressed = down
+        elif key == pygame.K_SPACE:
+            self._player.jump_pressed = down
+        elif key == pygame.K_e and down:
+            # E = fire shotgun toward the mouse cursor
+            mx, my = pygame.mouse.get_pos()
+            wx, wy = self._screen_to_world(mx, my)
+            self._player.shoot(wx, wy, self._buckshots)
+        elif key == pygame.K_q:
+            if down:
+                # Q pressed — fire grappling hook toward mouse cursor
+                mx, my = pygame.mouse.get_pos()
+                wx, wy = self._screen_to_world(mx, my)
+                self._player.fire_hook(wx, wy)
+            else:
+                # Q released — release the hook
+                self._player.release_hook()
 
     def draw(self, surface, gui_scale):
         now = time.time()
@@ -3342,6 +3879,29 @@ class SandWindow:
                 spark.step(self._state.grid)
             self._sparks = [s for s in self._sparks if s.alive]
 
+            # Step buckshot pellets — check for gnome hits
+            for pellet in self._buckshots:
+                pellet.step(self._state.grid)
+                if pellet.alive:
+                    # Check if pellet hits any gnome (within ~2 grid cells)
+                    for gnome in self._gnomes:
+                        if not gnome.alive:
+                            continue
+                        if abs(pellet.x - gnome.gx) < 2 and abs(pellet.y - gnome.gy) < 2:
+                            gnome.alive = False
+                            pellet.alive = False
+                            # Spawn gibs flying away from the shot
+                            for _ in range(random.randint(8, 14)):
+                                gb = _Gib(int(gnome.gx), int(gnome.gy), gnome.color)
+                                gb.vx = pellet.vx * 0.3 + random.uniform(-2.0, 2.0)
+                                gb.vy = pellet.vy * 0.3 + random.uniform(-4.0, -1.0)
+                                self._gibs.append(gb)
+                            # Small spark burst
+                            for _ in range(random.randint(6, 10)):
+                                self._sparks.append(_Spark(gnome.gx, gnome.gy))
+                            break
+            self._buckshots = [b for b in self._buckshots if b.alive]
+
             # Step splash drops
             for drop in self._splash_drops:
                 drop.step(self._state.grid, self._state.colors)
@@ -3370,6 +3930,73 @@ class SandWindow:
                     new_bombs.append(bomb)
             self._bombs = new_bombs
 
+            # Step player — poll keyboard directly for reliable input
+            if self._player is not None:
+                if self._player.alive:
+                    keys = pygame.key.get_pressed()
+                    self._player.move_left = keys[pygame.K_a]
+                    self._player.move_right = keys[pygame.K_d]
+                    self._player.move_down = keys[pygame.K_s]
+                    jump_now = keys[pygame.K_w] or keys[pygame.K_SPACE]
+                    if not jump_now:
+                        self._player._jump_consumed = False
+                    self._player.jump_pressed = jump_now
+                    # E key — fire shotgun toward mouse cursor (single-shot per press)
+                    e_now = keys[pygame.K_e]
+                    if e_now and not getattr(self, '_e_was_down', False):
+                        mx, my = pygame.mouse.get_pos()
+                        wx, wy = self._screen_to_world(mx, my)
+                        self._player.shoot(wx, wy, self._buckshots)
+                    self._e_was_down = e_now
+                    # Q key — grappling hook (hold to stay attached, release to let go)
+                    q_now = keys[pygame.K_q]
+                    if q_now and not getattr(self, '_q_was_down', False):
+                        # Fire hook toward mouse
+                        mx, my = pygame.mouse.get_pos()
+                        wx, wy = self._screen_to_world(mx, my)
+                        self._player.fire_hook(wx, wy)
+                    elif not q_now and getattr(self, '_q_was_down', False):
+                        # Released Q — let go of hook
+                        self._player.release_hook()
+                    self._q_was_down = q_now
+                    self._player.step(self._state.grid)
+                else:
+                    # Player died — reset camera
+                    self._player = None
+                    self._cam_target_zoom = 1.0
+
+        # ── Camera smoothing ──
+        cam_smooth = 0.08
+        if self._player is not None and self._player.alive:
+            self._cam_target_zoom = _PLAYER_CAMERA_ZOOM
+            # Decide camera focus point
+            focus_gx = self._player.gx
+            focus_gy = self._player.gy
+            if self._player.hook_active:
+                # Pan camera toward the hook at the same speed the hook travels
+                # Blend focus between player and hook — 50/50 midpoint
+                focus_gx = (self._player.gx + self._player.hook_x) * 0.5
+                focus_gy = (self._player.gy + self._player.hook_y) * 0.5
+                # Use faster cam smoothing so the camera keeps up with hook speed
+                cam_smooth = 0.18
+            player_px = focus_gx * _CELL + _CELL // 2
+            player_py = focus_gy * _CELL + _CELL // 2
+            target_cx = self._ww / 2 - player_px * self._cam_target_zoom
+            target_cy = self._wh / 2 - player_py * self._cam_target_zoom
+            # Clamp so we don't show past the edges of the world
+            max_cx = 0
+            min_cx = self._ww - self._ww * self._cam_target_zoom
+            max_cy = 0
+            min_cy = self._wh - self._wh * self._cam_target_zoom
+            target_cx = max(min_cx, min(max_cx, target_cx))
+            target_cy = max(min_cy, min(max_cy, target_cy))
+            self._cam_x += (target_cx - self._cam_x) * cam_smooth
+            self._cam_y += (target_cy - self._cam_y) * cam_smooth
+        else:
+            self._cam_x += (0.0 - self._cam_x) * cam_smooth
+            self._cam_y += (0.0 - self._cam_y) * cam_smooth
+        self._cam_zoom += (self._cam_target_zoom - self._cam_zoom) * cam_smooth
+
         surface.fill(_BLACK)
 
         # Fast pixel rendering — reuse buffer to avoid per-frame allocation
@@ -3379,16 +4006,27 @@ class SandWindow:
         self._rgb_buf[st.grid == EMPTY] = 0
         self._rgb_buf[st.grid == TUNNEL] = 0
 
-        # Blit into pre-allocated small surface, then scale into pre-allocated large surface
+        # Blit into pre-allocated small surface, then scale with camera zoom
         pygame.surfarray.blit_array(self._pixel_surf, self._rgb_buf.transpose(1, 0, 2))
-        pygame.transform.scale(self._pixel_surf, (self._ww, self._wh), self._scaled_surf)
-        surface.blit(self._scaled_surf, (0, 0))
+        cz = self._cam_zoom
+        scaled_w = int(self._ww * cz)
+        scaled_h = int(self._wh * cz)
+        if cz > 1.01:
+            zoomed = pygame.transform.scale(self._pixel_surf, (scaled_w, scaled_h))
+            surface.blit(zoomed, (int(self._cam_x), int(self._cam_y)))
+        else:
+            pygame.transform.scale(self._pixel_surf, (self._ww, self._wh), self._scaled_surf)
+            surface.blit(self._scaled_surf, (0, 0))
+
+        cam_ox = self._cam_x if cz > 1.01 else 0.0
+        cam_oy = self._cam_y if cz > 1.01 else 0.0
+        cam_z = cz if cz > 1.01 else 1.0
 
         # Draw gnomes as stick figures
         for gnome in self._gnomes:
-            sx = int(gnome.gx * _CELL + _CELL // 2)
+            sx = int((gnome.gx * _CELL + _CELL // 2) * cam_z + cam_ox)
             # Offset sy so feet land on the top of the cell below
-            sy = int(gnome.gy * _CELL + _CELL) - 22
+            sy = int((gnome.gy * _CELL + _CELL) * cam_z + cam_oy) - int(22 * cam_z)
             c = gnome.color
             # If on fire, flicker between orange/red
             if gnome.on_fire:
@@ -3468,21 +4106,32 @@ class SandWindow:
 
         # Draw gibs (bouncing body pieces)
         for gib in self._gibs:
-            gx_px = int(gib.x * _CELL + _CELL // 2)
-            gy_px = int(gib.y * _CELL + _CELL // 2)
-            pygame.draw.rect(surface, gib.color, (gx_px - 2, gy_px - 2, 5, 5))
+            gx_px = int(gib.x * _CELL * cam_z + _CELL // 2 * cam_z + cam_ox)
+            gy_px = int(gib.y * _CELL * cam_z + _CELL // 2 * cam_z + cam_oy)
+            sz = max(2, int(2.5 * cam_z))
+            pygame.draw.rect(surface, gib.color, (gx_px - sz, gy_px - sz, sz * 2 + 1, sz * 2 + 1))
 
         # Draw sparks (explosion shower)
         for spark in self._sparks:
-            sx_px = int(spark.x * _CELL + _CELL // 2)
-            sy_px = int(spark.y * _CELL + _CELL // 2)
-            pygame.draw.circle(surface, spark.color, (sx_px, sy_px), 2)
+            sx_px = int(spark.x * _CELL * cam_z + _CELL // 2 * cam_z + cam_ox)
+            sy_px = int(spark.y * _CELL * cam_z + _CELL // 2 * cam_z + cam_oy)
+            pygame.draw.circle(surface, spark.color, (sx_px, sy_px), max(1, int(2 * cam_z)))
+
+        # Draw buckshot pellets
+        for pellet in self._buckshots:
+            bx_px = int(pellet.x * _CELL * cam_z + _CELL // 2 * cam_z + cam_ox)
+            by_px = int(pellet.y * _CELL * cam_z + _CELL // 2 * cam_z + cam_oy)
+            # Draw a bright tracer line from current pos back along velocity
+            tail_x = int((pellet.x - pellet.vx * 0.5) * _CELL * cam_z + _CELL // 2 * cam_z + cam_ox)
+            tail_y = int((pellet.y - pellet.vy * 0.5) * _CELL * cam_z + _CELL // 2 * cam_z + cam_oy)
+            pygame.draw.line(surface, pellet.color, (tail_x, tail_y), (bx_px, by_px), max(1, int(2 * cam_z)))
+            pygame.draw.circle(surface, (255, 255, 255), (bx_px, by_px), max(1, int(1.5 * cam_z)))
 
         # Draw splash drops
         for drop in self._splash_drops:
-            dx_px = int(drop.x * _CELL + _CELL // 2)
-            dy_px = int(drop.y * _CELL + _CELL // 2)
-            pygame.draw.circle(surface, drop.color, (dx_px, dy_px), 2)
+            dx_px = int(drop.x * _CELL * cam_z + _CELL // 2 * cam_z + cam_ox)
+            dy_px = int(drop.y * _CELL * cam_z + _CELL // 2 * cam_z + cam_oy)
+            pygame.draw.circle(surface, drop.color, (dx_px, dy_px), max(1, int(2 * cam_z)))
 
         # Draw worms
         for worm in self._worms:
@@ -3498,22 +4147,30 @@ class SandWindow:
 
         # Draw line-start marker (double-click line tool)
         if self._line_start_gx is not None and self._line_start_gy is not None:
-            mx = self._line_start_gx * _CELL + _CELL // 2
-            my = self._line_start_gy * _CELL + _CELL // 2
-            pygame.draw.circle(surface, (255, 255, 0), (mx, my), 6, 2)
-            pygame.draw.circle(surface, (255, 255, 0), (mx, my), 2)
+            mx = int((self._line_start_gx * _CELL + _CELL // 2) * cam_z + cam_ox)
+            my = int((self._line_start_gy * _CELL + _CELL // 2) * cam_z + cam_oy)
+            pygame.draw.circle(surface, (255, 255, 0), (mx, my), max(3, int(6 * cam_z)), 2)
+            pygame.draw.circle(surface, (255, 255, 0), (mx, my), max(1, int(2 * cam_z)))
+
+        # Draw player character
+        if self._player is not None and self._player.alive:
+            self._player.draw(surface, cam_ox, cam_oy, cam_z)
 
         # Draw menu button (always visible)
         self._btn_menu.draw(surface)
 
-        # Draw menu panel when open
+        # Draw menu panel when open — centered overlay
         if self._menu_open:
-            # Semi-transparent backdrop behind buttons
-            panel_w = 6 * (82 + 4) + 4
-            panel_h = 5 * (40 + 4) + 4
-            backdrop = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
-            backdrop.fill((20, 20, 30, 200))
-            surface.blit(backdrop, (4, 48))
+            # Dim the whole screen
+            dim = pygame.Surface((self._ww, self._wh), pygame.SRCALPHA)
+            dim.fill((0, 0, 0, 140))
+            surface.blit(dim, (0, 0))
+            # Draw the panel background
+            pr = self._menu_panel_rect
+            panel = pygame.Surface((pr.w, pr.h), pygame.SRCALPHA)
+            panel.fill((15, 15, 30, 230))
+            surface.blit(panel, (pr.x, pr.y))
+            pygame.draw.rect(surface, (80, 80, 120), pr, 2, border_radius=8)
             for btn in self._menu_buttons:
                 btn.draw(surface)
 

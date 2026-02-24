@@ -332,6 +332,12 @@ class App:
                         if self._snd_doublepinch:
                             self._snd_doublepinch.play()
                         print("Opened Sand (hotkey)")
+                # Player keyboard controls (WASD + Space)
+                if self._sand.visible:
+                    if event.type == pygame.KEYDOWN:
+                        self._sand.handle_key(event.key, True)
+                    elif event.type == pygame.KEYUP:
+                        self._sand.handle_key(event.key, False)
                 if event.type == pygame.MOUSEWHEEL and self._sand.visible:
                     self._sand.handle_scroll(-event.y)  # scroll up = prev, down = next
                 # --- Mouse input (alternative to hand gestures) ---
