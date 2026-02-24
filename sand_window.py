@@ -103,6 +103,7 @@ class _Gnome:
         self.grounded = False
         self.walk_timer = 0
         self.hp = 3                     # hit points — takes 3 bullets to kill
+        self._last_hit_tick = -999      # sim tick of last damage — prevents multi-pellet insta-kill
         self.color = random.choice(_GNOME_COLORS)
         self.hat_color = random.choice(_HAT_COLORS)
         self.alive = True
@@ -625,7 +626,7 @@ class _Buckshot:
     """A single pellet of buckshot. Travels fast in a direction, destroys
     terrain it hits, and dies on impact or after max range."""
 
-    def __init__(self, x, y, vx, vy):
+    def __init__(self, x, y, vx, vy, damage=1):
         self.x = float(x)
         self.y = float(y)
         self.vx = vx
@@ -633,6 +634,7 @@ class _Buckshot:
         self.color = random.choice(_BUCKSHOT_COLORS)
         self.alive = True
         self.life = 0
+        self.damage = damage
 
     def step(self, grid):
         h, w = grid.shape
@@ -721,8 +723,9 @@ class _Missile:
 # ────────────────────────────────────────────
 
 class _FlameParticle:
-    """A single flame particle from the flamethrower. Travels a short distance
-    then plants fire/napalm onto the grid."""
+    """A single flame particle from the flamethrower. Travels fast, plants FIRE
+    (not napalm).  Fire rises — no downward gravity.  After 30 grid cells of
+    horizontal travel, a gentle upward drift kicks in so flames arc up."""
 
     def __init__(self, x, y, vx, vy):
         self.x = float(x)
@@ -732,10 +735,14 @@ class _FlameParticle:
         self.alive = True
         self.life = 0
         self.color = random.choice(_FIRE_COLORS)
+        self._start_x = float(x)  # remember spawn pos for delayed rise
 
     def step(self, grid, colors):
         h, w = grid.shape
-        self.vy += 0.06  # slight gravity — flames arc down
+        horiz_dist = abs(self.x - self._start_x)
+        # No vertical drift for the first 30 cells — pure flat trajectory
+        if horiz_dist >= 30.0:
+            self.vy -= 0.03  # fire RISES after 30 cells (negative = up)
         self.vx *= 0.97  # slight air drag
         self.x += self.vx
         self.y += self.vy
@@ -751,21 +758,20 @@ class _FlameParticle:
             colors[iy, ix] = random.choice(_FIRE_COLORS)
             self.alive = False
             return
-        # If we hit solid non-burnable — place napalm nearby and die
+        # If we hit solid non-burnable — place fire just before and die
         if cell not in (EMPTY, FIRE, NAPALM, TUNNEL, WATER, POISON, HOLYWATER):
-            # Try to place napalm just before the solid cell
             px, py = int(self.x - self.vx), int(self.y - self.vy)
             if 0 <= px < w and 0 <= py < h and grid[py, px] == EMPTY:
-                grid[py, px] = NAPALM
-                colors[py, px] = random.choice(_NAPALM_COLORS)
+                grid[py, px] = FIRE
+                colors[py, px] = random.choice(_FIRE_COLORS)
             self.alive = False
             return
-        # Place napalm in empty space as we travel
+        # Place fire (not napalm) in empty space as we travel
         if cell == EMPTY and random.random() < 0.3:
-            grid[iy, ix] = NAPALM
-            colors[iy, ix] = random.choice(_NAPALM_COLORS)
-        # Short range — die after ~25 ticks
-        if self.life > 25:
+            grid[iy, ix] = FIRE
+            colors[iy, ix] = random.choice(_FIRE_COLORS)
+        # Short range — die after ~12 ticks (half previous range)
+        if self.life > 12:
             self.alive = False
 
 
@@ -1507,12 +1513,12 @@ _CONFETTI_COLORS = [
 
 _PLAYER_WIDTH = 2    # half-width in grid cells
 _PLAYER_HEIGHT = 13  # full height in grid cells (matches gnome height)
-_PLAYER_GRAVITY = 0.25
-_PLAYER_JUMP_VEL = -3.8
+_PLAYER_GRAVITY = 0.125
+_PLAYER_JUMP_VEL = -2.7
 _PLAYER_MOVE_SPEED = 1.5
 _PLAYER_TERMINAL_VEL = 4.0
 # Grappling hook (ninja rope) constants
-_HOOK_SPEED = 1.8          # projectile travel speed (grid cells/tick) — no gravity, straight line
+_HOOK_SPEED = 2.34         # projectile travel speed (grid cells/tick) — no gravity, straight line
 _HOOK_PULL_ACCEL = 0.3     # how fast the rope pulls the player
 _HOOK_MAX_PULL_VEL = 1.2   # max speed while being pulled — slower than hook shoot speed
 _HOOK_ROPE_LEN_MIN = 1.5   # stop pulling when this close (arrive)
@@ -1564,16 +1570,24 @@ class _Player:
         h, w = grid.shape
         ix, iy = int(self.gx), int(self.gy)
 
-        if ix < 0 or ix >= w or iy < 0 or iy >= h:
+        # Kill only when falling off bottom or sides — clamp at top
+        if ix < 0 or ix >= w or iy >= h:
             self.alive = False
             return
+        if iy < 0:
+            self.gy = 0.0
+            if self.vy < 0:
+                self.vy = 0.0
+            iy = 0
 
         # ── Check for fire/napalm/magma contact ──
+        # FIRE alone doesn't ignite the player (prevents flamethrower self-burn).
+        # Only NAPALM and MAGMA light the player on fire.
         if not self.on_fire:
             for dx in range(-_PLAYER_WIDTH, _PLAYER_WIDTH + 1):
                 for dy in range(-_PLAYER_HEIGHT + 1, 1):
                     cx, cy = ix + dx, iy + dy
-                    if 0 <= cx < w and 0 <= cy < h and grid[cy, cx] in (FIRE, NAPALM, MAGMA):
+                    if 0 <= cx < w and 0 <= cy < h and grid[cy, cx] in (NAPALM, MAGMA):
                         self.on_fire = True
                         self.fire_start_time = time.time()
                         break
@@ -1844,7 +1858,7 @@ class _Player:
         if self._flame_cooldown > 0:
             self._flame_cooldown -= 1
             return
-        self._flame_cooldown = 1  # fire every other tick for rapid spray
+        self._flame_cooldown = 0  # fire every tick for heavy spray
         chest_gx = self.gx
         chest_gy = self.gy - _PLAYER_HEIGHT * 0.4
         tgx = target_wx / _CELL
@@ -1859,13 +1873,15 @@ class _Player:
         dy /= dist
         self.dir = 1 if dx >= 0 else -1
         base_angle = math.atan2(dy, dx)
-        # Spray 2-3 particles per burst, wider spread
-        for _ in range(random.randint(2, 3)):
-            a = base_angle + random.uniform(-0.25, 0.25)
-            spd = random.uniform(2.5, 4.0)
+        # Spawn well ahead of player and blast fast so it doesn't land at feet
+        spawn_offset = 5.0
+        for _ in range(random.randint(4, 6)):
+            a = base_angle + random.uniform(-0.30, 0.30)
+            spd = random.uniform(4.0, 5.5)
             fvx = math.cos(a) * spd
             fvy = math.sin(a) * spd
-            flame_list.append(_FlameParticle(chest_gx + dx * 1.5, chest_gy + dy * 1.5, fvx, fvy))
+            flame_list.append(_FlameParticle(chest_gx + dx * spawn_offset,
+                                             chest_gy + dy * spawn_offset, fvx, fvy))
 
     def _fire_mp5(self, target_wx, target_wy, buckshots_list):
         """Rapid-fire single bullet toward target (continuous fire with cooldown)."""
@@ -1892,7 +1908,7 @@ class _Player:
         spd = 5.0  # fast bullets
         bvx = math.cos(a) * spd
         bvy = math.sin(a) * spd
-        buckshots_list.append(_Buckshot(chest_gx + dx * 2, chest_gy + dy * 2, bvx, bvy))
+        buckshots_list.append(_Buckshot(chest_gx + dx * 2, chest_gy + dy * 2, bvx, bvy, damage=0.5))
 
     def _fire_homing(self, target_wx, target_wy, homing_list):
         """Fire a single homing missile toward target. Only one at a time."""
@@ -2038,6 +2054,18 @@ class _SandState:
 
     def count(self):
         return int(np.count_nonzero(self.grid))
+
+    def add_starting_platform(self):
+        """Draw a concrete platform in the centre of the world."""
+        cx, cy = self.width // 2, self.height // 2 + 10  # slightly below centre
+        half_w = 100  # platform half-width in grid cells
+        thickness = 3  # platform thickness
+        for dx in range(-half_w, half_w + 1):
+            for dy in range(thickness):
+                px, py = cx + dx, cy + dy
+                if 0 <= px < self.width and 0 <= py < self.height:
+                    self.grid[py, px] = CONCRETE
+                    self.colors[py, px] = _CONCRETE_COLOR
 
 
 def _throttle(ys, xs, cap=_PERF_CAP):
@@ -3038,6 +3066,7 @@ class SandWindow:
         self._gw = window_width // _CELL
         self._gh = window_height // _CELL
         self._state = _SandState(self._gw, self._gh)
+        self._state.add_starting_platform()
         self._mode = self.MODE_POUR
         self._fill_material = self.MODE_POUR
         self._color = _PALE_YELLOW
@@ -3070,6 +3099,10 @@ class SandWindow:
         self._line_start_gy = None
         self._pixel_surf = pygame.Surface((self._gw, self._gh))
         self._scaled_surf = pygame.Surface((window_width, window_height))
+        # Pre-allocate zoomed surface at max zoom to avoid per-frame allocation
+        zw = int(window_width * _PLAYER_CAMERA_ZOOM) + 2
+        zh = int(window_height * _PLAYER_CAMERA_ZOOM) + 2
+        self._zoomed_surf = pygame.Surface((zw, zh))
         self._rgb_buf = np.zeros((self._gh, self._gw, 3), dtype=np.uint8)
         self._font_small = pygame.font.Font(None, 24)
         self._font_title = pygame.font.Font(None, 36)
@@ -3255,6 +3288,7 @@ class SandWindow:
     def open(self):
         self.visible = True
         self._state = _SandState(self._gw, self._gh)
+        self._state.add_starting_platform()
         self._mode = self.MODE_POUR
         self._fill_material = self.MODE_POUR
         self._color = _PALE_YELLOW
@@ -3595,6 +3629,7 @@ class SandWindow:
                 self._update_button_states(); return
             if self._btn_clear.hit(px, py):
                 self._state.clear_all()
+                self._state.add_starting_platform()
                 self._gnomes = []
                 self._gibs = []
                 self._sparks = []
@@ -4230,36 +4265,48 @@ class SandWindow:
 
             # Step buckshot pellets — check for gnome hits
             for pellet in self._buckshots:
-                pellet.step(self._state.grid)
-                if pellet.alive:
-                    # Check if pellet hits any gnome (wider Y for taller gnomes)
-                    for gnome in self._gnomes:
-                        if not gnome.alive:
-                            continue
-                        if abs(pellet.x - gnome.gx) < 3 and abs(pellet.y - gnome.gy) < 5:
-                            gnome.hp -= 1
-                            pellet.alive = False
-                            if gnome.hp <= 0:
-                                gnome.alive = False
-                                # Big gib explosion on death
-                                for _ in range(random.randint(20, 35)):
-                                    gb = _Gib(int(gnome.gx), int(gnome.gy), gnome.color)
-                                    gb.vx = pellet.vx * 0.3 + random.uniform(-3.5, 3.5)
-                                    gb.vy = pellet.vy * 0.3 + random.uniform(-6.0, -1.0)
-                                    self._gibs.append(gb)
-                                # Big spark burst
-                                for _ in range(random.randint(15, 25)):
-                                    self._sparks.append(_Spark(gnome.gx, gnome.gy))
-                            else:
-                                # Hit but not dead — small blood splat
-                                for _ in range(random.randint(3, 6)):
-                                    gb = _Gib(int(gnome.gx), int(gnome.gy), (200, 50, 50))
-                                    gb.vx = pellet.vx * 0.2 + random.uniform(-1.5, 1.5)
-                                    gb.vy = random.uniform(-3.0, -0.5)
-                                    self._gibs.append(gb)
-                                for _ in range(random.randint(2, 4)):
-                                    self._sparks.append(_Spark(gnome.gx, gnome.gy))
+                if not pellet.alive:
+                    continue
+                # Check gnome hits BEFORE terrain collision so bullets
+                # don't get eaten by ground near a gnome's feet
+                for gnome in self._gnomes:
+                    if not gnome.alive:
+                        continue
+                    # Gnome body spans from gy (feet) up to gy-13 (hat tip)
+                    # Check X within 3 cells, Y anywhere along body height
+                    if abs(pellet.x - gnome.gx) < 3 and (gnome.gy - 13) <= pellet.y <= (gnome.gy + 1):
+                        pellet.alive = False
+                        # Only deal damage once per tick (prevents shotgun multi-pellet insta-kill)
+                        if gnome._last_hit_tick == self._sim_tick:
                             break
+                        gnome._last_hit_tick = self._sim_tick
+                        gnome.hp -= pellet.damage
+                        if gnome.hp <= 0:
+                            gnome.alive = False
+                            # Big bloody gib explosion on death
+                            for _ in range(random.randint(20, 35)):
+                                blood_c = random.choice([(200, 30, 30), (180, 20, 20), (220, 50, 40), (160, 10, 10), gnome.color])
+                                gb = _Gib(int(gnome.gx), int(gnome.gy), blood_c)
+                                gb.vx = pellet.vx * 0.3 + random.uniform(-3.5, 3.5)
+                                gb.vy = pellet.vy * 0.3 + random.uniform(-6.0, -1.0)
+                                self._gibs.append(gb)
+                            # Big spark burst
+                            for _ in range(random.randint(15, 25)):
+                                self._sparks.append(_Spark(gnome.gx, gnome.gy))
+                        else:
+                            # Hit but not dead — blood spray
+                            for _ in range(random.randint(6, 12)):
+                                blood_c = random.choice([(200, 30, 30), (180, 20, 20), (220, 50, 40), (160, 10, 10)])
+                                gb = _Gib(int(gnome.gx), int(gnome.gy), blood_c)
+                                gb.vx = pellet.vx * 0.4 + random.uniform(-2.5, 2.5)
+                                gb.vy = pellet.vy * 0.3 + random.uniform(-4.0, -0.5)
+                                self._gibs.append(gb)
+                            for _ in range(random.randint(4, 8)):
+                                self._sparks.append(_Spark(gnome.gx, gnome.gy))
+                        break
+                # Move pellet (terrain collision) only if it didn't hit a gnome
+                if pellet.alive:
+                    pellet.step(self._state.grid)
             self._buckshots = [b for b in self._buckshots if b.alive]
 
             # Step missiles — check for gnome hits, explode on solid terrain
@@ -4270,7 +4317,7 @@ class SandWindow:
                     for gnome in self._gnomes:
                         if not gnome.alive:
                             continue
-                        if abs(missile.x - gnome.gx) < 3 and abs(missile.y - gnome.gy) < 3:
+                        if abs(missile.x - gnome.gx) < 3 and (gnome.gy - 13) <= missile.y <= (gnome.gy + 1):
                             missile.exploded = True
                             missile.alive = False
                             break
@@ -4314,7 +4361,7 @@ class SandWindow:
                         for gnome in self._gnomes:
                             if not gnome.alive:
                                 continue
-                            if abs(hm.x - gnome.gx) < 3 and abs(hm.y - gnome.gy) < 3:
+                            if abs(hm.x - gnome.gx) < 3 and (gnome.gy - 13) <= hm.y <= (gnome.gy + 1):
                                 hm.exploded = True
                                 hm.alive = False
                                 break
@@ -4471,8 +4518,11 @@ class SandWindow:
         scaled_w = int(self._ww * cz)
         scaled_h = int(self._wh * cz)
         if cz > 1.01:
-            zoomed = pygame.transform.scale(self._pixel_surf, (scaled_w, scaled_h))
-            surface.blit(zoomed, (int(self._cam_x), int(self._cam_y)))
+            # Reuse pre-allocated zoomed surface — resize only if needed
+            if self._zoomed_surf.get_width() != scaled_w or self._zoomed_surf.get_height() != scaled_h:
+                self._zoomed_surf = pygame.Surface((scaled_w, scaled_h))
+            pygame.transform.scale(self._pixel_surf, (scaled_w, scaled_h), self._zoomed_surf)
+            surface.blit(self._zoomed_surf, (int(self._cam_x), int(self._cam_y)))
         else:
             pygame.transform.scale(self._pixel_surf, (self._ww, self._wh), self._scaled_surf)
             surface.blit(self._scaled_surf, (0, 0))
@@ -4610,12 +4660,12 @@ class SandWindow:
             ey = my_px - int(ndy * mw)
             pygame.draw.circle(surface, random.choice(_FIRE_COLORS), (ex, ey), max(2, int(3 * cam_z)))
 
-        # Draw flame particles
+        # Draw flame particles (square)
         for fp in self._flame_particles:
             fx_px = int(fp.x * _CELL * cam_z + _CELL // 2 * cam_z + cam_ox)
             fy_px = int(fp.y * _CELL * cam_z + _CELL // 2 * cam_z + cam_oy)
-            fr = max(2, int((4 - fp.life * 0.1) * cam_z))
-            pygame.draw.circle(surface, fp.color, (fx_px, fy_px), fr)
+            fs = max(3, int((5 - fp.life * 0.15) * cam_z))
+            pygame.draw.rect(surface, fp.color, (fx_px - fs // 2, fy_px - fs // 2, fs, fs))
 
         # Draw homing missiles
         for hm in self._homing_missiles:
