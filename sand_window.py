@@ -36,6 +36,11 @@ ICE = 13
 MONEY = 14
 DIRT = 15
 MAGMA = 16
+SEED = 17
+PLANT = 18
+STEAM = 19
+TUNNEL = 20
+GLASS = 21
 
 _WOOD_COLOR = (139, 90, 43)
 _WOOD_COLORS = [(139, 90, 43), (120, 75, 35), (160, 105, 50), (110, 70, 30)]
@@ -50,6 +55,11 @@ _ICE_COLORS = [(180, 220, 255), (160, 210, 250), (200, 230, 255), (140, 200, 245
 _MONEY_COLORS = [(40, 180, 40), (30, 160, 30), (60, 200, 50), (20, 140, 20), (50, 190, 45)]
 _DIRT_COLORS = [(101, 67, 33), (85, 55, 25), (120, 80, 40), (90, 60, 30), (110, 72, 36)]
 _MAGMA_COLORS = [(255, 80, 0), (255, 50, 10), (255, 120, 20), (220, 40, 0), (255, 160, 30)]
+_SEED_COLORS = [(120, 80, 20), (100, 70, 15), (140, 95, 30), (90, 60, 10), (130, 85, 25)]
+_PLANT_COLORS = [(30, 140, 30), (20, 120, 20), (40, 160, 40), (50, 180, 50), (25, 130, 25),
+                 (60, 170, 35), (35, 150, 45)]
+_STEAM_COLORS = [(200, 200, 210), (180, 185, 195), (220, 220, 230), (160, 165, 175), (210, 215, 225)]
+_GLASS_COLORS = [(180, 220, 240), (160, 200, 230), (200, 235, 250), (140, 195, 225), (190, 230, 245)]
 
 _FUN_COLORS = [
     (255, 69, 0), (255, 105, 180), (255, 255, 0),
@@ -192,7 +202,7 @@ class _Gnome:
             for dx in range(-2, 3):
                 for dy in range(-2, 3):
                     cx, cy = ix + dx, iy + dy
-                    if 0 <= cx < w and 0 <= cy < h and grid[cy, cx] in (FIRE, NAPALM):
+                    if 0 <= cx < w and 0 <= cy < h and grid[cy, cx] in (FIRE, NAPALM, MAGMA):
                         self.on_fire = True
                         self.fire_start_time = time.time()
                         break
@@ -562,8 +572,8 @@ class _Spark:
         if ix < 0 or ix >= w or iy < 0 or iy >= h:
             self.alive = False
             return
-        # Die if touching anything
-        if grid[iy, ix] != EMPTY:
+        # Die if touching anything solid (TUNNEL is open space)
+        if grid[iy, ix] != EMPTY and grid[iy, ix] != TUNNEL:
             self.alive = False
             return
         # Die after 40 frames max (~1s)
@@ -572,14 +582,195 @@ class _Spark:
 
 
 # ────────────────────────────────────────────
-# Bomb — pixelated TNT with 3-second fuse
+# SplashDrop — water droplet flung upward by an impact
+# ────────────────────────────────────────────
+
+_SPLASH_COLORS = [
+    (100, 160, 255), (120, 180, 255), (80, 140, 240),
+    (150, 200, 255), (200, 230, 255),
+]
+
+class _SplashDrop:
+    """A droplet of water ejected by a splash.  Arcs upward then falls
+    back down, re-inserting itself as a water particle when it lands."""
+
+    def __init__(self, x, y, fluid_type=WATER, fluid_color=None):
+        self.x = float(x)
+        self.y = float(y)
+        angle = random.uniform(math.pi * 0.15, math.pi * 0.85)  # upward arc
+        speed = random.uniform(2.0, 5.0)
+        self.vx = math.cos(angle) * speed * random.choice([-1, 1])
+        self.vy = -math.sin(angle) * speed  # upward
+        self.color = random.choice(_SPLASH_COLORS)
+        self.fluid_type = fluid_type
+        self.fluid_color = fluid_color if fluid_color is not None else self.color
+        self.alive = True
+        self.life = 0
+
+    def step(self, grid, colors):
+        h, w = grid.shape
+        self.vy += 0.3  # gravity
+        self.x += self.vx
+        self.y += self.vy
+        self.life += 1
+        ix, iy = int(self.x), int(self.y)
+
+        # Out of bounds — die without placing
+        if ix < 0 or ix >= w or iy >= h:
+            self.alive = False
+            return
+        if iy < 0:
+            return  # still rising above screen, keep going
+
+        # Falling and hit something? Place water on top
+        if self.vy > 0 and grid[iy, ix] != EMPTY:
+            # Find the empty cell right above
+            place_y = iy - 1
+            if 0 <= place_y < h and grid[place_y, ix] == EMPTY:
+                grid[place_y, ix] = self.fluid_type
+                colors[place_y, ix] = self.fluid_color
+            self.alive = False
+            return
+
+        # Die after 60 frames (~1.7s) — place water at current spot
+        if self.life > 60:
+            if 0 <= iy < h and 0 <= ix < w and grid[iy, ix] == EMPTY:
+                grid[iy, ix] = self.fluid_type
+                colors[iy, ix] = self.fluid_color
+            self.alive = False
+
+
+# ────────────────────────────────────────────
+# Worm — burrows through dirt, leaving tunnels
+# ────────────────────────────────────────────
+
+_WORM_COLORS = [(200, 120, 150), (180, 100, 130), (220, 140, 160), (190, 110, 140)]
+_TUNNEL_COLOR = (30, 20, 15)   # dark background for tunnels
+
+class _Worm:
+    """A worm that moves through dirt, eating it and leaving TUNNEL cells behind.
+    Moves 3 cells per sim tick in a wandering direction, carving 3×3 tunnels."""
+
+    def __init__(self, gx, gy):
+        self.gx = gx
+        self.gy = gy
+        # Pick a random direction (one of 8 neighbours)
+        angle = random.uniform(0, 2 * math.pi)
+        self.dx = math.cos(angle)
+        self.dy = math.sin(angle)
+        self.color = random.choice(_WORM_COLORS)
+        self.alive = True
+        self.life = 0
+        self.max_life = random.randint(80, 200)  # how far it burrows
+        # Body trail for drawing (list of recent (gx,gy) positions)
+        self._trail = []
+        self._trail_max = 7
+
+    def _carve(self, grid, colors, cx, cy):
+        """Carve a 3×3 area of dirt into tunnel around (cx, cy)."""
+        h, w = grid.shape
+        for ddx in range(-1, 2):
+            for ddy in range(-1, 2):
+                tx, ty = cx + ddx, cy + ddy
+                if 0 <= tx < w and 0 <= ty < h and grid[ty, tx] == DIRT:
+                    grid[ty, tx] = TUNNEL
+                    colors[ty, tx] = _TUNNEL_COLOR
+
+    def _can_move(self, grid, nx, ny):
+        """Check if center (nx, ny) has at least some dirt in 3×3 area."""
+        h, w = grid.shape
+        if nx < 0 or nx >= w or ny < 0 or ny >= h:
+            return False
+        # Need at least 1 dirt cell in the 3×3 to keep digging
+        for ddx in range(-1, 2):
+            for ddy in range(-1, 2):
+                tx, ty = nx + ddx, ny + ddy
+                if 0 <= tx < w and 0 <= ty < h and grid[ty, tx] == DIRT:
+                    return True
+        return False
+
+    def step(self, grid, colors):
+        h, w = grid.shape
+        self.life += 1
+        if self.life > self.max_life:
+            self.alive = False
+            return
+
+        # 3 moves per tick for faster burrowing
+        for _ in range(3):
+            # Add wobble to direction
+            self.dx += random.uniform(-0.4, 0.4)
+            self.dy += random.uniform(-0.4, 0.4)
+            # Normalize
+            mag = math.sqrt(self.dx * self.dx + self.dy * self.dy)
+            if mag > 0:
+                self.dx /= mag
+                self.dy /= mag
+
+            # Try primary direction
+            nx = self.gx + int(round(self.dx))
+            ny = self.gy + int(round(self.dy))
+
+            if self._can_move(grid, nx, ny):
+                self._trail.append((self.gx, self.gy))
+                if len(self._trail) > self._trail_max:
+                    self._trail.pop(0)
+                self._carve(grid, colors, self.gx, self.gy)
+                self.gx = nx
+                self.gy = ny
+            else:
+                # Try random adjacent cells
+                neighbors = []
+                for ddx in range(-1, 2):
+                    for ddy in range(-1, 2):
+                        if ddx == 0 and ddy == 0:
+                            continue
+                        cx, cy = self.gx + ddx, self.gy + ddy
+                        if self._can_move(grid, cx, cy):
+                            neighbors.append((cx, cy, ddx, ddy))
+                if neighbors:
+                    cx, cy, ddx, ddy = random.choice(neighbors)
+                    self._trail.append((self.gx, self.gy))
+                    if len(self._trail) > self._trail_max:
+                        self._trail.pop(0)
+                    self._carve(grid, colors, self.gx, self.gy)
+                    self.gx = cx
+                    self.gy = cy
+                    self.dx = ddx * 0.7 + self.dx * 0.3
+                    self.dy = ddy * 0.7 + self.dy * 0.3
+                else:
+                    self.alive = False
+                    return
+        # Carve at final position too
+        self._carve(grid, colors, self.gx, self.gy)
+
+    def draw(self, surface):
+        """Draw the worm body as a short chain of circles."""
+        # Trail segments (body)
+        for i, (tx, ty) in enumerate(self._trail):
+            sx = tx * _CELL + _CELL // 2
+            sy = ty * _CELL + _CELL // 2
+            r = max(3, _CELL - 1)
+            # Fade body segments
+            frac = (i + 1) / (len(self._trail) + 1)
+            bc = tuple(int(ch * frac * 0.7) for ch in self.color)
+            pygame.draw.circle(surface, bc, (sx, sy), r)
+        # Head
+        sx = self.gx * _CELL + _CELL // 2
+        sy = self.gy * _CELL + _CELL // 2
+        r = max(4, _CELL)
+        pygame.draw.circle(surface, self.color, (sx, sy), r)
+
+
+# ────────────────────────────────────────────
+# Bomb — pixelated TNT with 2-second fuse
 # ────────────────────────────────────────────
 
 _BOMB_RADIUS = 28   # explosion radius in grid cells
-_BOMB_FUSE = 3.0    # seconds before detonation
+_BOMB_FUSE = 2.0    # seconds before detonation
 
 class _Bomb:
-    """A pixelated bomb that falls with gravity and explodes after 3 seconds.
+    """A pixelated bomb that falls with gravity and explodes after 2 seconds.
     is_fire: if True, this is a firebomb that sprays napalm."""
 
     def __init__(self, gx, gy, is_fire=False):
@@ -757,7 +948,7 @@ class _Bomb:
 
 
 def _explode_bomb(state, bx, by, gnomes, gibs, sparks, is_fire=False):
-    """Simple explosion: destroys everything in a circle.
+    """Explosion: destroys everything in a circle, leaves stable cavity.
     is_fire: if True, fills the blast area with napalm instead of just clearing."""
     g = state.grid
     c = state.colors
@@ -765,7 +956,8 @@ def _explode_bomb(state, bx, by, gnomes, gibs, sparks, is_fire=False):
     cx, cy = int(bx), int(by)
     radius = _BOMB_RADIUS
 
-    # Destroy everything inside the blast radius
+    # Destroy everything inside the blast radius — leave TUNNEL so dirt
+    # above the crater doesn't collapse (TUNNEL blocks dirt but looks empty)
     for dy in range(-radius, radius + 1):
         for dx in range(-radius, radius + 1):
             dist = math.hypot(dx, dy)
@@ -774,16 +966,34 @@ def _explode_bomb(state, bx, by, gnomes, gibs, sparks, is_fire=False):
             nx, ny = cx + dx, cy + dy
             if 0 <= nx < w and 0 <= ny < h:
                 cell = g[ny, nx]
-                if cell == EMPTY:
+                if cell == EMPTY or cell == TUNNEL:
+                    g[ny, nx] = TUNNEL
+                    c[ny, nx] = (0, 0, 0)
+                    continue
+                # Leave fire and napalm alone — bombs don't extinguish flames
+                if cell == FIRE or cell == NAPALM:
                     continue
                 # Chain-react gunpowder — just light it, fuse will burn slowly
                 if cell == GUNPOWDER:
                     g[ny, nx] = FIRE
                     c[ny, nx] = random.choice(_FIRE_COLORS)
                     continue
-                # Clear the cell
-                g[ny, nx] = EMPTY
+                # Clear the cell into stable tunnel
+                g[ny, nx] = TUNNEL
                 c[ny, nx] = (0, 0, 0)
+
+    # Ring of fire at the blast edge — looks like the shockwave scorched it
+    for dy in range(-radius - 2, radius + 3):
+        for dx in range(-radius - 2, radius + 3):
+            dist = math.hypot(dx, dy)
+            if radius - 2 < dist < radius + 2:
+                nx, ny = cx + dx, cy + dy
+                if 0 <= nx < w and 0 <= ny < h:
+                    cell = g[ny, nx]
+                    if cell in (WOOD, PLANT, DIRT, HEAVY, STATIC):
+                        if random.random() < 0.5:
+                            g[ny, nx] = FIRE
+                            c[ny, nx] = random.choice(_FIRE_COLORS)
 
     # Fill blast area: firebomb sprays napalm, regular bomb just clears
     if is_fire:
@@ -793,13 +1003,12 @@ def _explode_bomb(state, bx, by, gnomes, gibs, sparks, is_fire=False):
                 if math.hypot(dx, dy) > radius * 0.8:
                     continue
                 nx, ny = cx + dx, cy + dy
-                if 0 <= nx < w and 0 <= ny < h and g[ny, nx] == EMPTY:
+                if 0 <= nx < w and 0 <= ny < h and g[ny, nx] == TUNNEL:
                     g[ny, nx] = NAPALM
                     c[ny, nx] = random.choice(_NAPALM_COLORS)
-    # Regular bomb: just the circle of destruction, no fire
 
-    # Shower of sparks from the explosion
-    for _ in range(random.randint(30, 50)):
+    # Big shower of sparks — radial burst
+    for _ in range(random.randint(120, 180)):
         sparks.append(_Spark(cx, cy))
 
     # Kill gnomes in blast radius — gibs fly out
@@ -839,6 +1048,8 @@ class _SandState:
         self.grid = np.zeros((h, w), dtype=np.uint8)
         # RGB color per cell
         self.colors = np.zeros((h, w, 3), dtype=np.uint8)
+        # Fire age tracker — ticks since ignition (uint8 caps at 255, plenty)
+        self.fire_age = np.zeros((h, w), dtype=np.uint8)
 
     def add(self, ptype, x, y, color):
         if 0 <= x < self.width and 0 <= y < self.height:
@@ -856,6 +1067,7 @@ class _SandState:
     def clear_all(self):
         self.grid[:] = 0
         self.colors[:] = 0
+        self.fire_age[:] = 0
 
     def count(self):
         return int(np.count_nonzero(self.grid))
@@ -872,15 +1084,15 @@ def _throttle(ys, xs, cap=_PERF_CAP):
     return ys[keep], xs[keep]
 
 
-def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False):
+def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False, splash_drops=None, vine_tips=None):
     """Vectorized physics step using numpy."""
     g = state.grid
     c = state.colors
     h, w = g.shape
 
-    # Find all falling particles: sand, gasoline, water, confetti, poison, holy water, money, dirt
+    # Find all falling particles: sand, gasoline, water, confetti, poison, holy water, money, dirt, seed
     # (GUNPOWDER is static — painted like a fuse line, does not fall)
-    falling = (g == HEAVY) | (g == GASOLINE) | (g == WATER) | (g == CONFETTI) | (g == POISON) | (g == HOLYWATER) | (g == MONEY) | (g == DIRT)
+    falling = (g == HEAVY) | (g == GASOLINE) | (g == WATER) | (g == CONFETTI) | (g == POISON) | (g == HOLYWATER) | (g == MONEY) | (g == DIRT) | (g == SEED)
     if not np.any(falling):
         return
 
@@ -900,7 +1112,7 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False):
     for i in range(len(ys)):
         y, x = int(ys[i]), int(xs[i])
         ptype = g[y, x]
-        if ptype not in (HEAVY, GASOLINE, WATER, CONFETTI, POISON, HOLYWATER, MONEY, DIRT):
+        if ptype not in (HEAVY, GASOLINE, WATER, CONFETTI, POISON, HOLYWATER, MONEY, DIRT, SEED):
             continue  # already moved by another particle this step
         col = c[y, x].copy()
 
@@ -915,23 +1127,68 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False):
 
         ny = y + grav
         moved = False
+        _fluids_for_splash = {WATER, GASOLINE, POISON, HOLYWATER}
+
+        # Dirt cannot fall into TUNNEL cells (tunnels hold their shape);
+        # everything else treats TUNNEL as open space.
+        def _is_open(cy, cx):
+            """Return True if cell (cy,cx) is open space this particle can move into."""
+            cell = g[cy, cx]
+            if cell == EMPTY:
+                return True
+            if cell == TUNNEL and ptype != DIRT:
+                return True
+            return False
 
         # Confetti/money flutters — 50% chance to skip falling, just drift sideways
         if ptype in (CONFETTI, MONEY) and random.random() < 0.5:
             lx = x + (1 if random.random() < 0.5 else -1)
-            if 0 <= lx < w and g[y, lx] == EMPTY:
+            if 0 <= lx < w and _is_open(y, lx):
                 g[y, x] = EMPTY
                 g[y, lx] = ptype
                 c[y, lx] = col
             continue
 
         # Try straight down
-        if 0 <= ny < h and g[ny, x] == EMPTY:
+        if 0 <= ny < h and _is_open(ny, x):
             g[y, x] = EMPTY
             g[ny, x] = ptype
             c[ny, x] = col
             y = ny
             moved = True
+        elif (0 <= ny < h and g[ny, x] in _fluids_for_splash
+              and ptype not in _fluids_for_splash):
+            # ── Splash! Non-fluid particle falls into fluid ──
+            fluid_t = g[ny, x]
+            fluid_c = c[ny, x].copy()
+            # Swap: particle sinks, fluid goes up
+            g[ny, x] = ptype
+            c[ny, x] = col
+            g[y, x] = fluid_t
+            c[y, x] = fluid_c
+            y = ny
+            moved = True
+
+            # Eject nearby surface fluid cells as splash drops
+            if splash_drops is not None:
+                n_drops = random.randint(3, 7)
+                for dx in range(-3, 4):
+                    if n_drops <= 0:
+                        break
+                    sx = x + dx
+                    if sx < 0 or sx >= w:
+                        continue
+                    # Find topmost fluid cell in this column near impact
+                    for sy in range(max(0, ny - 6), ny + 1):
+                        if g[sy, sx] in _fluids_for_splash:
+                            ft = g[sy, sx]
+                            fc = c[sy, sx].copy()
+                            g[sy, sx] = EMPTY
+                            c[sy, sx] = (0, 0, 0)
+                            splash_drops.append(
+                                _SplashDrop(sx, sy, ft, fc))
+                            n_drops -= 1
+                            break
         else:
             # Confetti destroys on contact — can't land, just vanishes
             if ptype == CONFETTI:
@@ -944,7 +1201,7 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False):
             else:
                 tries = [(x + 1, ny), (x - 1, ny)]
             for tx, ty in tries:
-                if 0 <= tx < w and 0 <= ty < h and g[ty, tx] == EMPTY:
+                if 0 <= tx < w and 0 <= ty < h and _is_open(ty, tx):
                     g[y, x] = EMPTY
                     g[ty, tx] = ptype
                     c[ty, tx] = col
@@ -954,46 +1211,29 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False):
 
         is_fluid = ptype in (GASOLINE, WATER, POISON, HOLYWATER)
 
-        # Fluids spread laterally when they can't fall — scan until blocked.
-        # Larger spread range so water levels out quickly.
+        # Fluids: try to slide sideways when blocked (just 1 cell, keep it simple)
         if not moved and is_fluid:
             direction = 1 if random.random() < 0.5 else -1
-            max_spread = 8
-            for _ in range(max_spread):
-                lx = x + direction
-                if 0 <= lx < w and g[y, lx] == EMPTY:
+            lx = x + direction
+            if 0 <= lx < w and _is_open(y, lx):
+                g[y, x] = EMPTY
+                g[y, lx] = ptype
+                c[y, lx] = col
+                x = lx
+                moved = True
+            else:
+                lx = x - direction
+                if 0 <= lx < w and _is_open(y, lx):
                     g[y, x] = EMPTY
                     g[y, lx] = ptype
                     c[y, lx] = col
                     x = lx
                     moved = True
-                    # If there's empty space below, stop spreading and fall next tick
-                    ny2 = y + grav
-                    if 0 <= ny2 < h and g[ny2, lx] == EMPTY:
-                        break
-                else:
-                    break
-            # If still stuck, try the other direction
-            if not moved:
-                direction = -direction
-                for _ in range(max_spread):
-                    lx = x + direction
-                    if 0 <= lx < w and g[y, lx] == EMPTY:
-                        g[y, x] = EMPTY
-                        g[y, lx] = ptype
-                        c[y, lx] = col
-                        x = lx
-                        moved = True
-                        ny2 = y + grav
-                        if 0 <= ny2 < h and g[ny2, lx] == EMPTY:
-                            break
-                    else:
-                        break
         elif not moved:
             # Non-fluid: only try lateral if didn't move at all
             if random.random() < slide_chance:
                 lx = x + (1 if random.random() < 0.5 else -1)
-                if 0 <= lx < w and g[y, lx] == EMPTY:
+                if 0 <= lx < w and _is_open(y, lx):
                     g[y, x] = EMPTY
                     g[y, lx] = ptype
                     c[y, lx] = col
@@ -1008,68 +1248,164 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False):
                 g[y, wx] = ptype
                 c[y, wx] = col
 
-    # ── Pressure equalization pass ──────────────────────────────
-    # Real water seeks its own level. For each column, if a fluid
-    # column is taller than its neighbor, move the top particle
-    # sideways so the surface levels out.  This runs after all
-    # per-particle movement and gives water its flat-surface look.
-    _fluids = (WATER, GASOLINE, POISON, HOLYWATER)
-    for x in range(w):
-        # Measure fluid height at this column from the bottom
-        col_h = 0
-        for yy in range(h - 1, -1, -1):
-            if g[yy, x] in _fluids:
-                col_h += 1
-            elif g[yy, x] != EMPTY:
-                break  # hit a solid, stop counting
-            else:
-                break  # hit air gap
-        if col_h < 2:
+    # ── Seed sprouting ───────────────────────────────────────────
+    # Seeds touching water convert to PLANT and spawn vine tips
+    # that grow gradually (1 cell per tick).
+    _water_set = {WATER, HOLYWATER}
+    seed_ys, seed_xs = np.where(g == SEED)
+    for si in range(len(seed_ys)):
+        sy, sx = int(seed_ys[si]), int(seed_xs[si])
+        if g[sy, sx] != SEED:
+            continue
+        # Check all 8 neighbors for water
+        touching_water = False
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                if dy == 0 and dx == 0:
+                    continue
+                ny2, nx2 = sy + dy, sx + dx
+                if 0 <= ny2 < h and 0 <= nx2 < w and g[ny2, nx2] in _water_set:
+                    touching_water = True
+                    break
+            if touching_water:
+                break
+        if not touching_water:
             continue
 
-        # Check neighbors and push toward shorter columns
-        for dx in (1, -1):
-            nx = x + dx
-            if nx < 0 or nx >= w:
+        # Sprout! Convert seed to plant and create 6 vine tips
+        g[sy, sx] = PLANT
+        c[sy, sx] = random.choice(_PLANT_COLORS)
+        if vine_tips is not None:
+            for _ in range(6):
+                angle = random.uniform(0, 2 * math.pi)
+                length = random.randint(12, 25)
+                vine_tips.append({
+                    'x': float(sx), 'y': float(sy),
+                    'dx': math.cos(angle), 'dy': math.sin(angle),
+                    'remaining': length,
+                })
+
+    # ── Vine growth (gradual) ──────────────────────────────────
+    # Each vine tip extends by 1 cell every ~4 ticks (slow growth).
+    if vine_tips is not None:
+        still_growing = []
+        for tip in vine_tips:
+            if random.random() < 0.75:
+                # Skip this tick — slows growth to ~1 cell per 4 ticks
+                still_growing.append(tip)
                 continue
-            # Measure neighbor fluid height from same floor
-            ncol_h = 0
-            for yy in range(h - 1, -1, -1):
-                if g[yy, nx] in _fluids:
-                    ncol_h += 1
-                elif g[yy, nx] != EMPTY:
+            tip['x'] += tip['dx'] + random.uniform(-0.3, 0.3)
+            tip['y'] += tip['dy'] + random.uniform(-0.3, 0.3)
+            tip['remaining'] -= 1
+            vix = int(round(tip['x']))
+            viy = int(round(tip['y']))
+            if vix < 0 or vix >= w or viy < 0 or viy >= h:
+                continue  # out of bounds — die
+            cell = g[viy, vix]
+            if cell == EMPTY or cell in _water_set:
+                g[viy, vix] = PLANT
+                c[viy, vix] = random.choice(_PLANT_COLORS)
+            elif cell == PLANT:
+                pass  # already plant, keep going through
+            else:
+                continue  # hit solid — die
+            if tip['remaining'] > 0:
+                still_growing.append(tip)
+        vine_tips.clear()
+        vine_tips.extend(still_growing)
+
+    # ── Fluid leveling pass ─────────────────────────────────────
+    # Run several passes bottom-to-top.  For each fluid cell that
+    # has a solid or fluid below it (settled), try to flow sideways
+    # into any adjacent empty cell that also has support below it,
+    # OR into an adjacent empty cell with nothing below (waterfall).
+    # This is the "cellular automaton" approach — simple and fast.
+    _fluids_set = {WATER, GASOLINE, POISON, HOLYWATER}
+
+    _open_set = {EMPTY, TUNNEL}   # cells that fluid can flow into
+
+    for _pass in range(4):
+        for y in range(h - 1, -1, -1):
+            # Alternate left-to-right vs right-to-left each pass
+            if _pass % 2 == 0:
+                col_range = range(w)
+            else:
+                col_range = range(w - 1, -1, -1)
+
+            for x in col_range:
+                if g[y, x] not in _fluids_set:
+                    continue
+
+                # Already falling? Skip — gravity handles it
+                below = y + 1
+                if below < h and g[below, x] in _open_set:
+                    continue
+
+                # Only flow sideways if under pressure (fluid above)
+                # or if the neighbor empty cell leads to a drop.
+                # This prevents surface particles from jiggling.
+                has_pressure = (y > 0 and g[y - 1, x] in _fluids_set)
+
+                d = 1 if random.random() < 0.5 else -1
+                for direction in (d, -d):
+                    nx = x + direction
+                    if nx < 0 or nx >= w:
+                        continue
+                    if g[y, nx] not in _open_set:
+                        continue
+
+                    # Check if the target cell leads to a drop
+                    # (empty below target = waterfall)
+                    target_below = y + 1
+                    drops = (target_below < h and g[target_below, nx] in _open_set)
+
+                    if not has_pressure and not drops:
+                        # Surface particle with nowhere to fall —
+                        # only move if it actually levels the column.
+                        # Count fluid height at current x vs neighbor.
+                        cur_h = 0
+                        sy = y
+                        while sy >= 0 and g[sy, x] in _fluids_set:
+                            cur_h += 1
+                            sy -= 1
+                        # Neighbor height
+                        nb_h = 0
+                        sy = y
+                        while sy >= 0 and g[sy, nx] in _fluids_set:
+                            nb_h += 1
+                            sy -= 1
+                        if cur_h - nb_h < 2:
+                            continue  # already level, don't jiggle
+
+                    pt = g[y, x]
+                    cl = c[y, x]
+                    g[y, x] = EMPTY
+                    g[y, nx] = pt
+                    c[y, nx] = cl
                     break
-                else:
-                    break
-            # Only equalize if we're at least 2 taller
-            if col_h - ncol_h >= 2:
-                # Find top fluid particle in this column
-                for ty in range(h):
-                    if g[ty, x] in _fluids:
-                        # Find the landing spot in neighbor column (above their top)
-                        land_y = ty  # same height or above
-                        # Scan down in neighbor to find empty spot
-                        for ly in range(ty, h):
-                            if g[ly, nx] == EMPTY:
-                                land_y = ly
-                                break
-                        else:
-                            break  # no room
-                        if g[land_y, nx] == EMPTY:
-                            ptype2 = g[ty, x]
-                            col2 = c[ty, x].copy()
-                            g[ty, x] = EMPTY
-                            g[land_y, nx] = ptype2
-                            c[land_y, nx] = col2
-                        break  # one particle per column per tick
 
 
 def _step_fire(state):
     """Physics step for fire particles: rise upward, spread, consume."""
+    _FIRE_MAX_AGE = 108   # ~3 seconds at 36 fps
     g = state.grid
     c = state.colors
+    fa = state.fire_age
     h, w = g.shape
 
+    fire = (g == FIRE)
+    if not np.any(fire):
+        return
+
+    # Bulk-age all fire cells by 1 tick
+    fa[fire] = np.minimum(fa[fire].astype(np.uint16) + 1, 255).astype(np.uint8)
+
+    # Kill any fire that's exceeded max age
+    old_fire = fire & (fa >= _FIRE_MAX_AGE)
+    g[old_fire] = EMPTY
+    fa[old_fire] = 0
+
+    # Re-find living fire
     fire = (g == FIRE)
     if not np.any(fire):
         return
@@ -1098,8 +1434,12 @@ def _step_fire(state):
             if 0 <= nx < w and 0 <= ny2 < h:
                 cell = g[ny2, nx]
                 if cell == WATER:
-                    # Water extinguishes this fire particle
-                    g[y, x] = EMPTY
+                    # Fire + water = steam (both cells)
+                    g[ny2, nx] = STEAM
+                    c[ny2, nx] = random.choice(_STEAM_COLORS)
+                    g[y, x] = STEAM
+                    c[y, x] = random.choice(_STEAM_COLORS)
+                    fa[y, x] = 0
                     extinguished = True
                     break
                 elif cell == ICE:
@@ -1107,18 +1447,27 @@ def _step_fire(state):
                     g[ny2, nx] = WATER
                     c[ny2, nx] = random.choice(_WATER_COLORS)
                     g[y, x] = EMPTY
+                    fa[y, x] = 0
                     extinguished = True
                     break
                 elif cell == WOOD:
                     if random.random() < 0.018:      # wood burns moderate
                         g[ny2, nx] = FIRE
                         c[ny2, nx] = random.choice(_FIRE_COLORS)
+                elif cell == PLANT:
+                    if random.random() < 0.04:       # plants burn easily
+                        g[ny2, nx] = FIRE
+                        c[ny2, nx] = random.choice(_FIRE_COLORS)
                 elif cell == DIRT:
                     if random.random() < 0.025:      # dirt burns faster than wood
                         g[ny2, nx] = FIRE
                         c[ny2, nx] = random.choice(_FIRE_COLORS)
-                elif cell == HEAVY or cell == STATIC:
-                    if random.random() < 0.009:      # sand/wall burns slow
+                elif cell == HEAVY:
+                    if random.random() < 0.08:       # fire + sand = glass
+                        g[ny2, nx] = GLASS
+                        c[ny2, nx] = random.choice(_GLASS_COLORS)
+                elif cell == STATIC:
+                    if random.random() < 0.009:      # wall burns slow
                         g[ny2, nx] = FIRE
                         c[ny2, nx] = random.choice(_FIRE_COLORS)
                 elif cell == GUNPOWDER:
@@ -1139,6 +1488,8 @@ def _step_fire(state):
         moved = False
 
         if 0 <= ny < h and g[ny, x] == EMPTY:
+            fa[ny, x] = fa[y, x]
+            fa[y, x] = 0
             g[y, x] = EMPTY
             g[ny, x] = FIRE
             c[ny, x] = col
@@ -1152,6 +1503,8 @@ def _step_fire(state):
                 tries = [(x + 1, ny), (x - 1, ny)]
             for tx, ty in tries:
                 if 0 <= tx < w and 0 <= ty < h and g[ty, tx] == EMPTY:
+                    fa[ty, tx] = fa[y, x]
+                    fa[y, x] = 0
                     g[y, x] = EMPTY
                     g[ty, tx] = FIRE
                     c[ty, tx] = col
@@ -1164,14 +1517,19 @@ def _step_fire(state):
             if random.random() < 0.4:
                 lx = x + (1 if random.random() < 0.5 else -1)
                 if 0 <= lx < w and g[y, lx] == EMPTY:
+                    fa[y, lx] = fa[y, x]
+                    fa[y, x] = 0
                     g[y, x] = EMPTY
                     g[y, lx] = FIRE
                     c[y, lx] = col
                     moved = True
 
-        # Fire has a chance to die out
-        if random.random() < 0.012:
+        # Fire has a chance to die out — ramps up aggressively with age
+        age = fa[y, x]
+        die_chance = 0.04 + (age / _FIRE_MAX_AGE) * 0.40
+        if random.random() < die_chance:
             g[y, x] = EMPTY
+            fa[y, x] = 0
 
 
 def _step_napalm(state):
@@ -1220,6 +1578,10 @@ def _step_napalm(state):
                     break
                 elif cell == WOOD:
                     if random.random() < 0.018:
+                        g[ny2, nx] = FIRE
+                        c[ny2, nx] = random.choice(_FIRE_COLORS)
+                elif cell == PLANT:
+                    if random.random() < 0.04:
                         g[ny2, nx] = FIRE
                         c[ny2, nx] = random.choice(_FIRE_COLORS)
                 elif cell == DIRT:
@@ -1306,7 +1668,7 @@ def _step_magma(state):
             continue
         col = tuple(random.choice(_MAGMA_COLORS))
 
-        # Count adjacent water cells — only extinguish if 3+ water neighbors
+        # Count adjacent water cells
         water_count = 0
         for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, -1), (-1, 1), (1, 1)]:
             nx, ny2 = x + dx, y + dy
@@ -1315,13 +1677,33 @@ def _step_magma(state):
                     water_count += 1
 
         extinguished = False
-        if water_count >= 3:
-            # Lots of water — extinguish and turn surrounding water to steam (empty)
-            g[y, x] = EMPTY
+        if water_count >= 1:
+            # Any water contact — magma hardens to concrete
+            # Surrounding water also solidifies into concrete (thick formation)
+            # with a few cells becoming steam for visual sizzle
+            g[y, x] = CONCRETE
+            c[y, x] = _CONCRETE_COLOR
             for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, -1), (-1, 1), (1, 1)]:
                 nx, ny2 = x + dx, y + dy
                 if 0 <= nx < w and 0 <= ny2 < h and g[ny2, nx] == WATER:
-                    g[ny2, nx] = EMPTY
+                    if random.random() < 0.7:
+                        # Most water hardens to concrete
+                        g[ny2, nx] = CONCRETE
+                        c[ny2, nx] = _CONCRETE_COLOR
+                    else:
+                        # Some water sizzles to steam
+                        g[ny2, nx] = STEAM
+                        c[ny2, nx] = random.choice(_STEAM_COLORS)
+                    # Also convert the ring around each water neighbor
+                    for dx2, dy2 in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                        nx2, ny3 = nx + dx2, ny2 + dy2
+                        if 0 <= nx2 < w and 0 <= ny3 < h and g[ny3, nx2] == WATER:
+                            if random.random() < 0.5:
+                                g[ny3, nx2] = CONCRETE
+                                c[ny3, nx2] = _CONCRETE_COLOR
+                            else:
+                                g[ny3, nx2] = STEAM
+                                c[ny3, nx2] = random.choice(_STEAM_COLORS)
             extinguished = True
         else:
             # Spread fire to neighbors (but IGNORE water — magma resists it)
@@ -1332,15 +1714,28 @@ def _step_magma(state):
                     if cell == ICE:
                         g[ny2, nx] = WATER
                         c[ny2, nx] = random.choice(_WATER_COLORS)
+                    elif cell == WATER:
+                        # Water sizzles into steam on contact with magma
+                        if random.random() < 0.15:
+                            g[ny2, nx] = STEAM
+                            c[ny2, nx] = random.choice(_STEAM_COLORS)
                     elif cell == WOOD:
                         if random.random() < 0.018:
+                            g[ny2, nx] = FIRE
+                            c[ny2, nx] = random.choice(_FIRE_COLORS)
+                    elif cell == PLANT:
+                        if random.random() < 0.04:
                             g[ny2, nx] = FIRE
                             c[ny2, nx] = random.choice(_FIRE_COLORS)
                     elif cell == DIRT:
                         if random.random() < 0.025:
                             g[ny2, nx] = FIRE
                             c[ny2, nx] = random.choice(_FIRE_COLORS)
-                    elif cell == HEAVY or cell == STATIC:
+                    elif cell == HEAVY:
+                        if random.random() < 0.08:       # magma + sand = glass
+                            g[ny2, nx] = GLASS
+                            c[ny2, nx] = random.choice(_GLASS_COLORS)
+                    elif cell == STATIC:
                         if random.random() < 0.009:
                             g[ny2, nx] = FIRE
                             c[ny2, nx] = random.choice(_FIRE_COLORS)
@@ -1392,6 +1787,69 @@ def _step_magma(state):
 
         # Magma lasts even longer than napalm (nearly permanent)
         if random.random() < 0.0003:
+            g[y, x] = EMPTY
+
+
+def _step_steam(state):
+    """Physics step for steam: rises upward, drifts sideways, fades out."""
+    g = state.grid
+    c = state.colors
+    h, w = g.shape
+
+    stm = (g == STEAM)
+    if not np.any(stm):
+        return
+
+    ys, xs = np.where(stm)
+    order = np.arange(len(ys))
+    np.random.shuffle(order)
+    ys = ys[order]
+    xs = xs[order]
+
+    for i in range(len(ys)):
+        y, x = int(ys[i]), int(xs[i])
+        if g[y, x] != STEAM:
+            continue
+        col = tuple(random.choice(_STEAM_COLORS))
+
+        # Rise upward
+        ny = y - 1
+        moved = False
+        if 0 <= ny < h and g[ny, x] == EMPTY:
+            g[y, x] = EMPTY
+            g[ny, x] = STEAM
+            c[ny, x] = col
+            y = ny
+            moved = True
+        else:
+            # Try diagonal up-left / up-right
+            if random.random() < 0.5:
+                tries = [(x - 1, ny), (x + 1, ny)]
+            else:
+                tries = [(x + 1, ny), (x - 1, ny)]
+            for tx, ty in tries:
+                if 0 <= tx < w and 0 <= ty < h and g[ty, tx] == EMPTY:
+                    g[y, x] = EMPTY
+                    g[ty, tx] = STEAM
+                    c[ty, tx] = col
+                    x, y = tx, ty
+                    moved = True
+                    break
+
+        # Random lateral drift
+        if not moved and random.random() < 0.4:
+            lx = x + (1 if random.random() < 0.5 else -1)
+            if 0 <= lx < w and g[y, lx] == EMPTY:
+                g[y, x] = EMPTY
+                g[y, lx] = STEAM
+                c[y, lx] = col
+
+        # Steam dissipates quickly
+        if random.random() < 0.04:
+            g[y, x] = EMPTY
+
+        # Reached top of screen — disappear
+        if y <= 0:
             g[y, x] = EMPTY
 
 
@@ -1473,6 +1931,9 @@ class SandWindow:
     MODE_DIRT = 20
     MODE_MATCH = 21
     MODE_MAGMA = 22
+    MODE_SEED = 23
+    MODE_WORM = 24
+    MODE_GLASS = 25
 
     def __init__(self, window_width, window_height):
         self.visible = False
@@ -1496,6 +1957,9 @@ class SandWindow:
         self._gnomes = []
         self._gibs = []
         self._sparks = []
+        self._splash_drops = []
+        self._vine_tips = []
+        self._worms = []
         self._bombs = []
         self._bomb_font = pygame.font.Font(None, 20)
         self._poison_settle = {}        # (x,y) -> time when poison settled
@@ -1510,86 +1974,157 @@ class SandWindow:
         self._font_small = pygame.font.Font(None, 24)
         self._font_title = pygame.font.Font(None, 36)
         self._sim_tick = 0               # frame counter for sim stepping
+        self._menu_open = False          # collapsible tool menu
         self._buttons = []
+        self._menu_buttons = []          # buttons only visible when menu is open
         self._build_buttons()
 
     def _build_buttons(self):
-        bw = 88
-        bh = 50
-        margin = 5
-        row2_y = self._wh - bh - margin
-        row1_y = row2_y - bh - margin
+        bw = 82
+        bh = 40
+        margin = 4
 
-        x = margin
-        self._btn_pour = _Button(x, row1_y, bw, bh, "SAND", font_size=24); x += bw + margin
-        self._btn_hand = _Button(x, row1_y, bw, bh, "HAND", font_size=24,
-                                 color=(80, 60, 40), active_color=(220, 180, 120)); x += bw + margin
-        self._btn_wood = _Button(x, row1_y, bw, bh, "WOOD", font_size=24,
-                                 color=(70, 45, 20), active_color=(180, 120, 60)); x += bw + margin
-        self._btn_concrete = _Button(x, row1_y, bw, bh, "CONCRT", font_size=22,
-                                     color=(60, 60, 65), active_color=(160, 160, 170)); x += bw + margin
-        self._btn_erase = _Button(x, row1_y, bw, bh, "ERASE", font_size=24); x += bw + margin
-        self._btn_color = _Button(x, row1_y, bw, bh, "COLOR", font_size=24); x += bw + margin
-        self._btn_gnome = _Button(x, row1_y, bw, bh, "GNOME", font_size=24); x += bw + margin
-        self._btn_fire = _Button(x, row1_y, bw, bh, "FIRE", font_size=24,
-                                 color=(80, 30, 0), active_color=(255, 120, 0)); x += bw + margin
-        self._btn_confetti = _Button(x, row1_y, bw, bh, "CONFTI", font_size=22,
-                                     color=(100, 40, 100), active_color=(255, 100, 255)); x += bw + margin
-        self._btn_bomb = _Button(x, row1_y, bw, bh, "BOMB", font_size=24,
-                                 color=(50, 50, 50), active_color=(255, 80, 0)); x += bw + margin
-        self._btn_money = _Button(x, row1_y, bw, bh, "MONEY", font_size=22,
-                                  color=(20, 80, 20), active_color=(60, 200, 60)); x += bw + margin
-        self._btn_firebomb = _Button(x, row1_y, bw, bh, "FBOMB", font_size=22,
-                                     color=(120, 30, 0), active_color=(255, 80, 0)); x += bw + margin
-        self._btn_dirt = _Button(x, row1_y, bw, bh, "DIRT", font_size=24,
-                                 color=(60, 40, 20), active_color=(140, 90, 45)); x += bw + margin
-        self._btn_match = _Button(x, row1_y, bw, bh, "MATCH", font_size=22,
-                                  color=(100, 50, 10), active_color=(255, 140, 30)); x += bw + margin
+        # ── Menu toggle button — always visible, top-left ──
+        self._btn_menu = _Button(margin, margin, 82, 40, "☰ SND", font_size=22,
+                                 color=(60, 60, 80), active_color=(100, 200, 150))
 
-        x = margin
-        self._btn_wind = _Button(x, row2_y, bw, bh, "WIND", font_size=24); x += bw + margin
-        self._btn_wind_dir = _Button(x, row2_y, bw, bh, "WIND>", font_size=22); x += bw + margin
-        self._btn_gravity = _Button(x, row2_y, bw, bh, "GRAV", font_size=24); x += bw + margin
-        self._btn_slow = _Button(x, row2_y, bw, bh, "SLOW", font_size=24,
-                                 color=(30, 60, 100), active_color=(80, 160, 255)); x += bw + margin
-        self._btn_fast = _Button(x, row2_y, bw, bh, "FAST", font_size=24,
-                                 color=(100, 60, 30), active_color=(255, 160, 80)); x += bw + margin
-        self._btn_clear = _Button(x, row2_y, bw, bh, "CLEAR", font_size=24); x += bw + margin
-        self._btn_fill = _Button(x, row2_y, bw, bh, "FILL", font_size=24,
-                                 color=(50, 50, 80), active_color=(120, 180, 255)); x += bw + margin
-        self._btn_gunpowder = _Button(x, row2_y, bw, bh, "GUNPW", font_size=22,
-                                      color=(50, 50, 50), active_color=(120, 120, 120)); x += bw + margin
-        self._btn_napalm = _Button(x, row2_y, bw, bh, "NAPLM", font_size=22,
-                                   color=(120, 30, 0), active_color=(255, 60, 0)); x += bw + margin
-        self._btn_gasoline = _Button(x, row2_y, bw, bh, "GAS", font_size=24,
-                                     color=(70, 80, 20), active_color=(200, 220, 60)); x += bw + margin
-        self._btn_water = _Button(x, row2_y, bw, bh, "WATER", font_size=24,
-                                  color=(15, 50, 120), active_color=(40, 130, 255)); x += bw + margin
-        self._btn_poison = _Button(x, row2_y, bw, bh, "ZOMBI", font_size=22,
-                                   color=(20, 80, 10), active_color=(50, 200, 30)); x += bw + margin
-        self._btn_holywater = _Button(x, row2_y, bw, bh, "HOLY", font_size=24,
-                                      color=(80, 80, 130), active_color=(200, 200, 255)); x += bw + margin
-        self._btn_ice = _Button(x, row2_y, bw, bh, "ICE", font_size=24,
-                                color=(60, 90, 120), active_color=(180, 220, 255)); x += bw + margin
-        self._btn_magma = _Button(x, row2_y, bw, bh, "MAGMA", font_size=22,
-                                  color=(120, 40, 0), active_color=(255, 100, 0)); x += bw + margin
+        # ── Grid of tool buttons — shown only when menu is open ──
+        # Layout: columns flowing left to right, rows top to bottom
+        # Starting below the menu button
+        panel_x = margin
+        panel_y = margin + 44
 
-        quit_h = bh * 2 + margin
-        self._btn_quit = _Button(self._ww - bw - margin, row1_y, bw, quit_h, "QUIT",
-                                 color=(120, 30, 30), active_color=(255, 60, 60), font_size=28)
+        def _place(row, col):
+            return (panel_x + col * (bw + margin),
+                    panel_y + row * (bh + margin))
 
-        self._buttons = [
-            self._btn_pour, self._btn_hand, self._btn_wood, self._btn_concrete,
-            self._btn_erase, self._btn_color,
-            self._btn_gnome, self._btn_fire, self._btn_gunpowder, self._btn_napalm,
-            self._btn_gasoline, self._btn_water, self._btn_confetti, self._btn_bomb,
-            self._btn_money, self._btn_firebomb, self._btn_dirt, self._btn_match,
-            self._btn_poison, self._btn_holywater, self._btn_ice, self._btn_magma,
+        # Row 0 — Materials
+        r, c = 0, 0
+        x, y = _place(r, c)
+        self._btn_pour = _Button(x, y, bw, bh, "SAND", font_size=22); c += 1
+        x, y = _place(r, c)
+        self._btn_dirt = _Button(x, y, bw, bh, "DIRT", font_size=22,
+                                 color=(60, 40, 20), active_color=(140, 90, 45)); c += 1
+        x, y = _place(r, c)
+        self._btn_water = _Button(x, y, bw, bh, "WATER", font_size=22,
+                                  color=(15, 50, 120), active_color=(40, 130, 255)); c += 1
+        x, y = _place(r, c)
+        self._btn_wood = _Button(x, y, bw, bh, "WOOD", font_size=22,
+                                 color=(70, 45, 20), active_color=(180, 120, 60)); c += 1
+        x, y = _place(r, c)
+        self._btn_concrete = _Button(x, y, bw, bh, "CONCRT", font_size=20,
+                                     color=(60, 60, 65), active_color=(160, 160, 170)); c += 1
+        x, y = _place(r, c)
+        self._btn_ice = _Button(x, y, bw, bh, "ICE", font_size=22,
+                                color=(60, 90, 120), active_color=(180, 220, 255)); c += 1
+
+        # Row 1 — Fire / explosives
+        r, c = 1, 0
+        x, y = _place(r, c)
+        self._btn_fire = _Button(x, y, bw, bh, "FIRE", font_size=22,
+                                 color=(80, 30, 0), active_color=(255, 120, 0)); c += 1
+        x, y = _place(r, c)
+        self._btn_napalm = _Button(x, y, bw, bh, "NAPLM", font_size=20,
+                                   color=(120, 30, 0), active_color=(255, 60, 0)); c += 1
+        x, y = _place(r, c)
+        self._btn_magma = _Button(x, y, bw, bh, "MAGMA", font_size=20,
+                                  color=(120, 40, 0), active_color=(255, 100, 0)); c += 1
+        x, y = _place(r, c)
+        self._btn_gasoline = _Button(x, y, bw, bh, "GAS", font_size=22,
+                                     color=(70, 80, 20), active_color=(200, 220, 60)); c += 1
+        x, y = _place(r, c)
+        self._btn_gunpowder = _Button(x, y, bw, bh, "GUNPW", font_size=20,
+                                      color=(50, 50, 50), active_color=(120, 120, 120)); c += 1
+        x, y = _place(r, c)
+        self._btn_match = _Button(x, y, bw, bh, "MATCH", font_size=20,
+                                  color=(100, 50, 10), active_color=(255, 140, 30)); c += 1
+
+        # Row 2 — Special / creatures
+        r, c = 2, 0
+        x, y = _place(r, c)
+        self._btn_gnome = _Button(x, y, bw, bh, "GNOME", font_size=22); c += 1
+        x, y = _place(r, c)
+        self._btn_confetti = _Button(x, y, bw, bh, "CONFTI", font_size=20,
+                                     color=(100, 40, 100), active_color=(255, 100, 255)); c += 1
+        x, y = _place(r, c)
+        self._btn_poison = _Button(x, y, bw, bh, "ZOMBI", font_size=20,
+                                   color=(20, 80, 10), active_color=(50, 200, 30)); c += 1
+        x, y = _place(r, c)
+        self._btn_holywater = _Button(x, y, bw, bh, "HOLY", font_size=22,
+                                      color=(80, 80, 130), active_color=(200, 200, 255)); c += 1
+        x, y = _place(r, c)
+        self._btn_money = _Button(x, y, bw, bh, "MONEY", font_size=20,
+                                  color=(20, 80, 20), active_color=(60, 200, 60)); c += 1
+        x, y = _place(r, c)
+        self._btn_bomb = _Button(x, y, bw, bh, "BOMB", font_size=22,
+                                 color=(50, 50, 50), active_color=(255, 80, 0)); c += 1
+
+        # Row 3 — Tools / actions
+        r, c = 3, 0
+        x, y = _place(r, c)
+        self._btn_hand = _Button(x, y, bw, bh, "HAND", font_size=22,
+                                 color=(80, 60, 40), active_color=(220, 180, 120)); c += 1
+        x, y = _place(r, c)
+        self._btn_erase = _Button(x, y, bw, bh, "ERASE", font_size=22); c += 1
+        x, y = _place(r, c)
+        self._btn_fill = _Button(x, y, bw, bh, "FILL", font_size=22,
+                                 color=(50, 50, 80), active_color=(120, 180, 255)); c += 1
+        x, y = _place(r, c)
+        self._btn_firebomb = _Button(x, y, bw, bh, "FBOMB", font_size=20,
+                                     color=(120, 30, 0), active_color=(255, 80, 0)); c += 1
+        x, y = _place(r, c)
+        self._btn_color = _Button(x, y, bw, bh, "COLOR", font_size=22); c += 1
+        x, y = _place(r, c)
+        self._btn_clear = _Button(x, y, bw, bh, "CLEAR", font_size=22); c += 1
+
+        # Row 4 — Settings
+        r, c = 4, 0
+        x, y = _place(r, c)
+        self._btn_wind = _Button(x, y, bw, bh, "WIND", font_size=22); c += 1
+        x, y = _place(r, c)
+        self._btn_wind_dir = _Button(x, y, bw, bh, "WIND>", font_size=20); c += 1
+        x, y = _place(r, c)
+        self._btn_gravity = _Button(x, y, bw, bh, "GRAV", font_size=22); c += 1
+        x, y = _place(r, c)
+        self._btn_slow = _Button(x, y, bw, bh, "SLOW", font_size=22,
+                                 color=(30, 60, 100), active_color=(80, 160, 255)); c += 1
+        x, y = _place(r, c)
+        self._btn_fast = _Button(x, y, bw, bh, "FAST", font_size=22,
+                                 color=(100, 60, 30), active_color=(255, 160, 80)); c += 1
+        x, y = _place(r, c)
+        self._btn_quit = _Button(x, y, bw, bh, "QUIT", font_size=22,
+                                 color=(120, 30, 30), active_color=(255, 60, 60)); c += 1
+
+        # Row 5 — Nature
+        r, c = 5, 0
+        x, y = _place(r, c)
+        self._btn_seed = _Button(x, y, bw, bh, "SEED", font_size=22,
+                                 color=(60, 40, 10), active_color=(140, 95, 30)); c += 1
+        x, y = _place(r, c)
+        self._btn_worm = _Button(x, y, bw, bh, "WORM", font_size=22,
+                                 color=(120, 70, 90), active_color=(220, 140, 160)); c += 1
+        x, y = _place(r, c)
+        self._btn_glass = _Button(x, y, bw, bh, "GLASS", font_size=20,
+                                  color=(80, 110, 130), active_color=(180, 220, 240)); c += 1
+
+        # Menu buttons — only visible when menu is open
+        self._menu_buttons = [
+            self._btn_pour, self._btn_dirt, self._btn_water, self._btn_wood,
+            self._btn_concrete, self._btn_ice,
+            self._btn_fire, self._btn_napalm, self._btn_magma, self._btn_gasoline,
+            self._btn_gunpowder, self._btn_match,
+            self._btn_gnome, self._btn_confetti, self._btn_poison, self._btn_holywater,
+            self._btn_money, self._btn_bomb,
+            self._btn_hand, self._btn_erase, self._btn_fill, self._btn_firebomb,
+            self._btn_color, self._btn_clear,
             self._btn_wind, self._btn_wind_dir, self._btn_gravity,
-            self._btn_slow, self._btn_fast, self._btn_clear,
-            self._btn_fill,
-            self._btn_quit,
+            self._btn_slow, self._btn_fast, self._btn_quit,
+            self._btn_seed, self._btn_worm,
+            self._btn_glass,
         ]
+
+        # All buttons = menu toggle + menu items
+        self._buttons = [self._btn_menu] + self._menu_buttons
 
     def open(self):
         self.visible = True
@@ -1609,6 +2144,9 @@ class SandWindow:
         self._gnomes = []
         self._gibs = []
         self._sparks = []
+        self._splash_drops = []
+        self._vine_tips = []
+        self._worms = []
         self._bombs = []
         self._poison_settle = {}
         self._gnome_spawned_this_pinch = False
@@ -1616,6 +2154,7 @@ class SandWindow:
         self._held_gnome = None
         self._line_start_gx = None
         self._line_start_gy = None
+        self._menu_open = False
         self._update_button_states()
 
     def close(self):
@@ -1629,6 +2168,19 @@ class SandWindow:
         # Clear line-start marker when switching modes
         self._line_start_gx = None
         self._line_start_gy = None
+        # Update menu button label to show current tool
+        _mode_labels = {
+            self.MODE_POUR: "☰ SND", self.MODE_HAND: "☰ HND", self.MODE_WOOD: "☰ WOD",
+            self.MODE_CONCRETE: "☰ CON", self.MODE_ERASE: "☰ ERS", self.MODE_GNOME: "☰ GNM",
+            self.MODE_FIRE: "☰ FIR", self.MODE_GUNPOWDER: "☰ GUN", self.MODE_NAPALM: "☰ NAP",
+            self.MODE_GASOLINE: "☰ GAS", self.MODE_WATER: "☰ WTR", self.MODE_CONFETTI: "☰ CNF",
+            self.MODE_POISON: "☰ ZMB", self.MODE_HOLYWATER: "☰ HLY", self.MODE_ICE: "☰ ICE",
+            self.MODE_BOMB: "☰ BMB", self.MODE_MONEY: "☰ $$$", self.MODE_FIREBOMB: "☰ FBM",
+            self.MODE_DIRT: "☰ DRT", self.MODE_MATCH: "☰ MCH", self.MODE_MAGMA: "☰ MAG",
+            self.MODE_FILL: "☰ FIL", self.MODE_SEED: "☰ SED",
+            self.MODE_WORM: "☰ WRM", self.MODE_GLASS: "☰ GLS",
+        }
+        self._btn_menu.label = _mode_labels.get(self._mode, "☰")
         self._btn_pour.active = (self._mode == self.MODE_POUR)
         self._btn_hand.active = (self._mode == self.MODE_HAND)
         self._btn_wood.active = (self._mode == self.MODE_WOOD)
@@ -1651,6 +2203,9 @@ class SandWindow:
         self._btn_match.active = (self._mode == self.MODE_MATCH)
         self._btn_magma.active = (self._mode == self.MODE_MAGMA)
         self._btn_fill.active = (self._mode == self.MODE_FILL)
+        self._btn_seed.active = (self._mode == self.MODE_SEED)
+        self._btn_worm.active = (self._mode == self.MODE_WORM)
+        self._btn_glass.active = (self._mode == self.MODE_GLASS)
         # Show what material fill will use
         _fill_names = {
             self.MODE_POUR: "FILL:S",
@@ -1658,6 +2213,7 @@ class SandWindow:
             self.MODE_FIRE: "FILL:F", self.MODE_GUNPOWDER: "FILL:GP",
             self.MODE_NAPALM: "FILL:N", self.MODE_GASOLINE: "FILL:G",
             self.MODE_WATER: "FILL:Wt", self.MODE_DIRT: "FILL:D",
+            self.MODE_GLASS: "FILL:Gl",
         }
         self._btn_fill.label = _fill_names.get(self._fill_material, "FILL")
         self._btn_wind.active = self._wind_active
@@ -1675,9 +2231,12 @@ class SandWindow:
         self._btn_fast.label = f"FST {spd}" if self._sim_speed < 2 else "FAST"
 
     def _in_ui_zone(self, px, py):
-        for btn in self._buttons:
-            if btn.hit(px, py):
-                return True
+        if self._btn_menu.hit(px, py):
+            return True
+        if self._menu_open:
+            for btn in self._menu_buttons:
+                if btn.hit(px, py):
+                    return True
         return False
 
     def _flood_fill(self, gx, gy):
@@ -1713,6 +2272,8 @@ class SandWindow:
             ptype, color_fn = WATER, lambda: random.choice(_WATER_COLORS)
         elif mat == self.MODE_DIRT:
             ptype, color_fn = DIRT, lambda: random.choice(_DIRT_COLORS)
+        elif mat == self.MODE_GLASS:
+            ptype, color_fn = GLASS, lambda: random.choice(_GLASS_COLORS)
         else:
             ptype, color_fn = HEAVY, lambda: self._color
 
@@ -1754,111 +2315,137 @@ class SandWindow:
         return False
 
     def handle_tap(self, px, py):
-        if self._btn_quit.hit(px, py):
-            self.close()
-            print("Closed Sand (quit button)")
+        # Menu toggle — always active
+        if self._btn_menu.hit(px, py):
+            self._menu_open = not self._menu_open
+            self._btn_menu.active = self._menu_open
             return
-        if self._btn_pour.hit(px, py):
-            self._mode = self.MODE_POUR
-            self._fill_material = self.MODE_POUR
-            self._update_button_states(); return
-        if self._btn_hand.hit(px, py):
-            self._mode = self.MODE_HAND
-            self._update_button_states(); return
-        if self._btn_wood.hit(px, py):
-            self._mode = self.MODE_WOOD
-            self._fill_material = self.MODE_WOOD
-            self._update_button_states(); return
-        if self._btn_concrete.hit(px, py):
-            self._mode = self.MODE_CONCRETE
-            self._fill_material = self.MODE_CONCRETE
-            self._update_button_states(); return
-        if self._btn_erase.hit(px, py):
-            self._mode = self.MODE_ERASE
-            self._update_button_states(); return
-        if self._btn_gnome.hit(px, py):
-            self._mode = self.MODE_GNOME
-            self._update_button_states(); return
-        if self._btn_fire.hit(px, py):
-            self._mode = self.MODE_FIRE
-            self._fill_material = self.MODE_FIRE
-            self._update_button_states(); return
-        if self._btn_gunpowder.hit(px, py):
-            self._mode = self.MODE_GUNPOWDER
-            self._fill_material = self.MODE_GUNPOWDER
-            self._update_button_states(); return
-        if self._btn_napalm.hit(px, py):
-            self._mode = self.MODE_NAPALM
-            self._fill_material = self.MODE_NAPALM
-            self._update_button_states(); return
-        if self._btn_gasoline.hit(px, py):
-            self._mode = self.MODE_GASOLINE
-            self._fill_material = self.MODE_GASOLINE
-            self._update_button_states(); return
-        if self._btn_water.hit(px, py):
-            self._mode = self.MODE_WATER
-            self._fill_material = self.MODE_WATER
-            self._update_button_states(); return
-        if self._btn_confetti.hit(px, py):
-            self._mode = self.MODE_CONFETTI
-            self._update_button_states(); return
-        if self._btn_poison.hit(px, py):
-            self._mode = self.MODE_POISON
-            self._update_button_states(); return
-        if self._btn_holywater.hit(px, py):
-            self._mode = self.MODE_HOLYWATER
-            self._update_button_states(); return
-        if self._btn_ice.hit(px, py):
-            self._mode = self.MODE_ICE
-            self._update_button_states(); return
-        if self._btn_bomb.hit(px, py):
-            self._mode = self.MODE_BOMB
-            self._update_button_states(); return
-        if self._btn_money.hit(px, py):
-            self._mode = self.MODE_MONEY
-            self._update_button_states(); return
-        if self._btn_firebomb.hit(px, py):
-            self._mode = self.MODE_FIREBOMB
-            self._update_button_states(); return
-        if self._btn_dirt.hit(px, py):
-            self._mode = self.MODE_DIRT
-            self._fill_material = self.MODE_DIRT
-            self._update_button_states(); return
-        if self._btn_match.hit(px, py):
-            self._mode = self.MODE_MATCH
-            self._update_button_states(); return
-        if self._btn_magma.hit(px, py):
-            self._mode = self.MODE_MAGMA
-            self._update_button_states(); return
-        if self._btn_fill.hit(px, py):
-            self._mode = self.MODE_FILL
-            self._update_button_states(); return
-        if self._btn_color.hit(px, py):
-            self.random_color()
-            self._update_button_states(); return
-        if self._btn_wind.hit(px, py):
-            self._wind_active = not self._wind_active
-            self._update_button_states(); return
-        if self._btn_wind_dir.hit(px, py):
-            self._wind_dir *= -1
-            self._update_button_states(); return
-        if self._btn_gravity.hit(px, py):
-            self._reverse_gravity = not self._reverse_gravity
-            self._update_button_states(); return
-        if self._btn_slow.hit(px, py):
-            self._sim_speed = min(6, self._sim_speed + 1)
-            self._update_button_states(); return
-        if self._btn_fast.hit(px, py):
-            self._sim_speed = max(1, self._sim_speed - 1)
-            self._update_button_states(); return
-        if self._btn_clear.hit(px, py):
-            self._state.clear_all()
-            self._gnomes = []
-            self._gibs = []
-            self._sparks = []
-            self._bombs = []
-            self._poison_settle = {}
+        # If menu is open, check menu buttons
+        if self._menu_open:
+            if self._btn_quit.hit(px, py):
+                self.close()
+                print("Closed Sand (quit button)")
+                return
+            if self._btn_pour.hit(px, py):
+                self._mode = self.MODE_POUR
+                self._fill_material = self.MODE_POUR
+                self._update_button_states(); return
+            if self._btn_hand.hit(px, py):
+                self._mode = self.MODE_HAND
+                self._update_button_states(); return
+            if self._btn_wood.hit(px, py):
+                self._mode = self.MODE_WOOD
+                self._fill_material = self.MODE_WOOD
+                self._update_button_states(); return
+            if self._btn_concrete.hit(px, py):
+                self._mode = self.MODE_CONCRETE
+                self._fill_material = self.MODE_CONCRETE
+                self._update_button_states(); return
+            if self._btn_erase.hit(px, py):
+                self._mode = self.MODE_ERASE
+                self._update_button_states(); return
+            if self._btn_gnome.hit(px, py):
+                self._mode = self.MODE_GNOME
+                self._update_button_states(); return
+            if self._btn_fire.hit(px, py):
+                self._mode = self.MODE_FIRE
+                self._fill_material = self.MODE_FIRE
+                self._update_button_states(); return
+            if self._btn_gunpowder.hit(px, py):
+                self._mode = self.MODE_GUNPOWDER
+                self._fill_material = self.MODE_GUNPOWDER
+                self._update_button_states(); return
+            if self._btn_napalm.hit(px, py):
+                self._mode = self.MODE_NAPALM
+                self._fill_material = self.MODE_NAPALM
+                self._update_button_states(); return
+            if self._btn_gasoline.hit(px, py):
+                self._mode = self.MODE_GASOLINE
+                self._fill_material = self.MODE_GASOLINE
+                self._update_button_states(); return
+            if self._btn_water.hit(px, py):
+                self._mode = self.MODE_WATER
+                self._fill_material = self.MODE_WATER
+                self._update_button_states(); return
+            if self._btn_confetti.hit(px, py):
+                self._mode = self.MODE_CONFETTI
+                self._update_button_states(); return
+            if self._btn_poison.hit(px, py):
+                self._mode = self.MODE_POISON
+                self._update_button_states(); return
+            if self._btn_holywater.hit(px, py):
+                self._mode = self.MODE_HOLYWATER
+                self._update_button_states(); return
+            if self._btn_ice.hit(px, py):
+                self._mode = self.MODE_ICE
+                self._update_button_states(); return
+            if self._btn_bomb.hit(px, py):
+                self._mode = self.MODE_BOMB
+                self._update_button_states(); return
+            if self._btn_money.hit(px, py):
+                self._mode = self.MODE_MONEY
+                self._update_button_states(); return
+            if self._btn_firebomb.hit(px, py):
+                self._mode = self.MODE_FIREBOMB
+                self._update_button_states(); return
+            if self._btn_dirt.hit(px, py):
+                self._mode = self.MODE_DIRT
+                self._fill_material = self.MODE_DIRT
+                self._update_button_states(); return
+            if self._btn_match.hit(px, py):
+                self._mode = self.MODE_MATCH
+                self._update_button_states(); return
+            if self._btn_magma.hit(px, py):
+                self._mode = self.MODE_MAGMA
+                self._update_button_states(); return
+            if self._btn_fill.hit(px, py):
+                self._mode = self.MODE_FILL
+                self._update_button_states(); return
+            if self._btn_seed.hit(px, py):
+                self._mode = self.MODE_SEED
+                self._update_button_states(); return
+            if self._btn_worm.hit(px, py):
+                self._mode = self.MODE_WORM
+                self._update_button_states(); return
+            if self._btn_glass.hit(px, py):
+                self._mode = self.MODE_GLASS
+                self._fill_material = self.MODE_GLASS
+                self._update_button_states(); return
+            if self._btn_color.hit(px, py):
+                self.random_color()
+                self._update_button_states(); return
+            if self._btn_wind.hit(px, py):
+                self._wind_active = not self._wind_active
+                self._update_button_states(); return
+            if self._btn_wind_dir.hit(px, py):
+                self._wind_dir *= -1
+                self._update_button_states(); return
+            if self._btn_gravity.hit(px, py):
+                self._reverse_gravity = not self._reverse_gravity
+                self._update_button_states(); return
+            if self._btn_slow.hit(px, py):
+                self._sim_speed = min(6, self._sim_speed + 1)
+                self._update_button_states(); return
+            if self._btn_fast.hit(px, py):
+                self._sim_speed = max(1, self._sim_speed - 1)
+                self._update_button_states(); return
+            if self._btn_clear.hit(px, py):
+                self._state.clear_all()
+                self._gnomes = []
+                self._gibs = []
+                self._sparks = []
+                self._splash_drops = []
+                self._vine_tips = []
+                self._worms = []
+                self._bombs = []
+                self._poison_settle = {}
+                self._menu_open = False; self._btn_menu.active = False
+                return
+            # Click outside menu panel closes it
+            self._menu_open = False
+            self._btn_menu.active = False
             return
+        # Menu is closed — canvas interaction
         if not self._in_ui_zone(px, py):
             # Check if clicking on a parachute — destroy it regardless of mode
             if self._try_destroy_parachute(px, py):
@@ -1889,6 +2476,10 @@ class SandWindow:
                 for dx in range(-1, 2):
                     for dy in range(-1, 2):
                         self._state.add(CONCRETE, gx + dx, gy + dy, _CONCRETE_COLOR)
+            elif self._mode == self.MODE_GLASS:
+                for dx in range(-1, 2):
+                    for dy in range(-1, 2):
+                        self._state.add(GLASS, gx + dx, gy + dy, random.choice(_GLASS_COLORS))
             elif self._mode == self.MODE_GNOME:
                 self._gnomes.append(_Gnome(gx, gy))
             elif self._mode == self.MODE_FIRE:
@@ -2026,6 +2617,21 @@ class SandWindow:
                 for dx in range(-1, 2):
                     for dy in range(-1, 2):
                         self._state.add(CONCRETE, gx + dx, gy + dy, _CONCRETE_COLOR)
+            self._last_wall_gx = gx
+            self._last_wall_gy = gy
+        elif self._mode == self.MODE_GLASS:
+            if (self._last_wall_gx is not None and self._last_wall_gy is not None
+                    and abs(gx - self._last_wall_gx) <= 8
+                    and abs(gy - self._last_wall_gy) <= 8):
+                line_pts = _bresenham(self._last_wall_gx, self._last_wall_gy, gx, gy)
+                for lx, ly in line_pts:
+                    for dx in range(-1, 2):
+                        for dy in range(-1, 2):
+                            self._state.add(GLASS, lx + dx, ly + dy, random.choice(_GLASS_COLORS))
+            else:
+                for dx in range(-1, 2):
+                    for dy in range(-1, 2):
+                        self._state.add(GLASS, gx + dx, gy + dy, random.choice(_GLASS_COLORS))
             self._last_wall_gx = gx
             self._last_wall_gy = gy
         elif self._mode == self.MODE_ERASE:
@@ -2171,13 +2777,35 @@ class SandWindow:
                 self._fill_done_this_pinch = True
             self._last_wall_gx = None
             self._last_wall_gy = None
+        elif self._mode == self.MODE_SEED:
+            # Drop just ~5 seeds, scattered loosely
+            if not getattr(self, '_gnome_spawned_this_pinch', False):
+                for _ in range(5):
+                    rx = gx + random.randint(-2, 2)
+                    ry = gy + random.randint(-2, 1)
+                    self._state.add(SEED, rx, ry, random.choice(_SEED_COLORS))
+                self._gnome_spawned_this_pinch = True
+            self._last_wall_gx = None
+            self._last_wall_gy = None
+        elif self._mode == self.MODE_WORM:
+            # Spawn 3 worms at click location — one-shot per pinch
+            if not getattr(self, '_gnome_spawned_this_pinch', False):
+                g = self._state.grid
+                h, w = g.shape
+                # Only spawn in dirt
+                if 0 <= gx < w and 0 <= gy < h and g[gy, gx] == DIRT:
+                    for _ in range(3):
+                        self._worms.append(_Worm(gx, gy))
+                self._gnome_spawned_this_pinch = True
+            self._last_wall_gx = None
+            self._last_wall_gy = None
 
     def handle_double_click(self, px, py):
         """Double-click line tool: first click sets start, second draws line."""
         if self._in_ui_zone(px, py):
             return
         # Only works for solid painting modes
-        if self._mode not in (self.MODE_WOOD, self.MODE_CONCRETE, self.MODE_ICE, self.MODE_GUNPOWDER):
+        if self._mode not in (self.MODE_WOOD, self.MODE_CONCRETE, self.MODE_ICE, self.MODE_GUNPOWDER, self.MODE_GLASS):
             return
         gx, gy = int(px) // _CELL, int(py) // _CELL
         if self._line_start_gx is None:
@@ -2207,6 +2835,11 @@ class SandWindow:
                     for dx in range(-1, 2):
                         for dy in range(-1, 2):
                             self._state.add(GUNPOWDER, lx + dx, ly + dy, random.choice(_GUNPOWDER_COLORS))
+            elif self._mode == self.MODE_GLASS:
+                for lx, ly in line_pts:
+                    for dx in range(-1, 2):
+                        for dy in range(-1, 2):
+                            self._state.add(GLASS, lx + dx, ly + dy, random.choice(_GLASS_COLORS))
             self._line_start_gx = None
             self._line_start_gy = None
 
@@ -2227,7 +2860,7 @@ class SandWindow:
     _SCROLL_MODES = [
         MODE_POUR, MODE_HAND, MODE_WOOD, MODE_CONCRETE, MODE_ERASE,
         MODE_GNOME, MODE_FIRE, MODE_GUNPOWDER, MODE_NAPALM, MODE_GASOLINE,
-        MODE_WATER, MODE_CONFETTI, MODE_POISON, MODE_HOLYWATER, MODE_ICE, MODE_BOMB, MODE_FIREBOMB, MODE_MONEY, MODE_DIRT, MODE_MATCH, MODE_MAGMA, MODE_FILL,
+        MODE_WATER, MODE_CONFETTI, MODE_POISON, MODE_HOLYWATER, MODE_ICE, MODE_BOMB, MODE_FIREBOMB, MODE_MONEY, MODE_DIRT, MODE_MATCH, MODE_MAGMA, MODE_FILL, MODE_SEED, MODE_WORM, MODE_GLASS,
     ]
 
     def handle_scroll(self, direction):
@@ -2239,7 +2872,7 @@ class SandWindow:
         idx = (idx + direction) % len(self._SCROLL_MODES)
         self._mode = self._SCROLL_MODES[idx]
         # Update fill material for material modes
-        if self._mode not in (self.MODE_ERASE, self.MODE_GNOME, self.MODE_HAND, self.MODE_FILL, self.MODE_CONFETTI, self.MODE_POISON, self.MODE_HOLYWATER, self.MODE_ICE, self.MODE_BOMB, self.MODE_FIREBOMB, self.MODE_MONEY, self.MODE_MATCH, self.MODE_MAGMA):
+        if self._mode not in (self.MODE_ERASE, self.MODE_GNOME, self.MODE_HAND, self.MODE_FILL, self.MODE_CONFETTI, self.MODE_POISON, self.MODE_HOLYWATER, self.MODE_ICE, self.MODE_BOMB, self.MODE_FIREBOMB, self.MODE_MONEY, self.MODE_MATCH, self.MODE_MAGMA, self.MODE_SEED, self.MODE_WORM):
             self._fill_material = self._mode
         self._update_button_states()
 
@@ -2252,10 +2885,11 @@ class SandWindow:
         # Main loop runs at 60fps; we step the sim every Nth frame based on speed setting.
         self._sim_tick += 1
         if self._sim_tick % self._sim_speed == 0:
-            _step(self._state, self._wind_active, self._wind_dir, self._reverse_gravity)
+            _step(self._state, self._wind_active, self._wind_dir, self._reverse_gravity, self._splash_drops, self._vine_tips)
             _step_fire(self._state)
             _step_napalm(self._state)
             _step_magma(self._state)
+            _step_steam(self._state)
 
             # Poison decay — settled poison disappears after 2 seconds
             g = self._state.grid
@@ -2333,6 +2967,16 @@ class SandWindow:
                 spark.step(self._state.grid)
             self._sparks = [s for s in self._sparks if s.alive]
 
+            # Step splash drops
+            for drop in self._splash_drops:
+                drop.step(self._state.grid, self._state.colors)
+            self._splash_drops = [d for d in self._splash_drops if d.alive]
+
+            # Step worms
+            for worm in self._worms:
+                worm.step(self._state.grid, self._state.colors)
+            self._worms = [w for w in self._worms if w.alive]
+
             # Step bombs — physics + fuse check
             for bomb in self._bombs:
                 bomb.step(self._state.grid)
@@ -2350,9 +2994,10 @@ class SandWindow:
 
         # Fast pixel rendering — reuse buffer to avoid per-frame allocation
         st = self._state
-        # Copy colors into pre-allocated buffer, zero out empty cells in-place
+        # Copy colors into pre-allocated buffer, zero out empty/tunnel cells in-place
         np.copyto(self._rgb_buf, st.colors)
         self._rgb_buf[st.grid == EMPTY] = 0
+        self._rgb_buf[st.grid == TUNNEL] = 0
 
         # Blit into pre-allocated small surface, then scale into pre-allocated large surface
         pygame.surfarray.blit_array(self._pixel_surf, self._rgb_buf.transpose(1, 0, 2))
@@ -2446,6 +3091,16 @@ class SandWindow:
             sy_px = int(spark.y * _CELL + _CELL // 2)
             pygame.draw.circle(surface, spark.color, (sx_px, sy_px), 2)
 
+        # Draw splash drops
+        for drop in self._splash_drops:
+            dx_px = int(drop.x * _CELL + _CELL // 2)
+            dy_px = int(drop.y * _CELL + _CELL // 2)
+            pygame.draw.circle(surface, drop.color, (dx_px, dy_px), 2)
+
+        # Draw worms
+        for worm in self._worms:
+            worm.draw(surface)
+
         # Draw bombs
         for bomb in self._bombs:
             bomb.draw(surface, self._bomb_font)
@@ -2457,9 +3112,19 @@ class SandWindow:
             pygame.draw.circle(surface, (255, 255, 0), (mx, my), 6, 2)
             pygame.draw.circle(surface, (255, 255, 0), (mx, my), 2)
 
-        # Draw buttons
-        for btn in self._buttons:
-            btn.draw(surface)
+        # Draw menu button (always visible)
+        self._btn_menu.draw(surface)
+
+        # Draw menu panel when open
+        if self._menu_open:
+            # Semi-transparent backdrop behind buttons
+            panel_w = 6 * (82 + 4) + 4
+            panel_h = 5 * (40 + 4) + 4
+            backdrop = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
+            backdrop.fill((20, 20, 30, 200))
+            surface.blit(backdrop, (4, 48))
+            for btn in self._menu_buttons:
+                btn.draw(surface)
 
         # Particle count (cached font)
         count = st.count()
