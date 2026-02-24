@@ -954,12 +954,12 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False):
 
         is_fluid = ptype in (GASOLINE, WATER, POISON, HOLYWATER)
 
-        # Fluids spread laterally when they can't fall — prevents piling up like sand.
-        # Only spread when sitting (not after falling), and 2-3 cells to stay natural.
+        # Fluids spread laterally when they can't fall — scan until blocked.
+        # Larger spread range so water levels out quickly.
         if not moved and is_fluid:
             direction = 1 if random.random() < 0.5 else -1
-            spread = random.randint(2, 3)
-            for _ in range(spread):
+            max_spread = 8
+            for _ in range(max_spread):
                 lx = x + direction
                 if 0 <= lx < w and g[y, lx] == EMPTY:
                     g[y, x] = EMPTY
@@ -967,8 +967,28 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False):
                     c[y, lx] = col
                     x = lx
                     moved = True
+                    # If there's empty space below, stop spreading and fall next tick
+                    ny2 = y + grav
+                    if 0 <= ny2 < h and g[ny2, lx] == EMPTY:
+                        break
                 else:
                     break
+            # If still stuck, try the other direction
+            if not moved:
+                direction = -direction
+                for _ in range(max_spread):
+                    lx = x + direction
+                    if 0 <= lx < w and g[y, lx] == EMPTY:
+                        g[y, x] = EMPTY
+                        g[y, lx] = ptype
+                        c[y, lx] = col
+                        x = lx
+                        moved = True
+                        ny2 = y + grav
+                        if 0 <= ny2 < h and g[ny2, lx] == EMPTY:
+                            break
+                    else:
+                        break
         elif not moved:
             # Non-fluid: only try lateral if didn't move at all
             if random.random() < slide_chance:
@@ -988,6 +1008,60 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False):
                 g[y, wx] = ptype
                 c[y, wx] = col
 
+    # ── Pressure equalization pass ──────────────────────────────
+    # Real water seeks its own level. For each column, if a fluid
+    # column is taller than its neighbor, move the top particle
+    # sideways so the surface levels out.  This runs after all
+    # per-particle movement and gives water its flat-surface look.
+    _fluids = (WATER, GASOLINE, POISON, HOLYWATER)
+    for x in range(w):
+        # Measure fluid height at this column from the bottom
+        col_h = 0
+        for yy in range(h - 1, -1, -1):
+            if g[yy, x] in _fluids:
+                col_h += 1
+            elif g[yy, x] != EMPTY:
+                break  # hit a solid, stop counting
+            else:
+                break  # hit air gap
+        if col_h < 2:
+            continue
+
+        # Check neighbors and push toward shorter columns
+        for dx in (1, -1):
+            nx = x + dx
+            if nx < 0 or nx >= w:
+                continue
+            # Measure neighbor fluid height from same floor
+            ncol_h = 0
+            for yy in range(h - 1, -1, -1):
+                if g[yy, nx] in _fluids:
+                    ncol_h += 1
+                elif g[yy, nx] != EMPTY:
+                    break
+                else:
+                    break
+            # Only equalize if we're at least 2 taller
+            if col_h - ncol_h >= 2:
+                # Find top fluid particle in this column
+                for ty in range(h):
+                    if g[ty, x] in _fluids:
+                        # Find the landing spot in neighbor column (above their top)
+                        land_y = ty  # same height or above
+                        # Scan down in neighbor to find empty spot
+                        for ly in range(ty, h):
+                            if g[ly, nx] == EMPTY:
+                                land_y = ly
+                                break
+                        else:
+                            break  # no room
+                        if g[land_y, nx] == EMPTY:
+                            ptype2 = g[ty, x]
+                            col2 = c[ty, x].copy()
+                            g[ty, x] = EMPTY
+                            g[land_y, nx] = ptype2
+                            c[land_y, nx] = col2
+                        break  # one particle per column per tick
 
 
 def _step_fire(state):
