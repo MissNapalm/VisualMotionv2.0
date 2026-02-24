@@ -191,8 +191,13 @@ class App:
                 if not self._any_app_visible and st.scroll_unlocked and st.pinch_start_pos:
                     total = math.hypot(px - st.pinch_start_pos[0], py - st.pinch_start_pos[1])
                     if total > st.movement_threshold:
-                        st.card_offset += dx * st.scroll_gain
-                        st.category_offset += dy * st.scroll_gain
+                        move_x = dx * st.scroll_gain
+                        move_y = dy * st.scroll_gain
+                        st.card_offset += move_x
+                        st.category_offset += move_y
+                        # Track velocity for inertia (blend to smooth spikes)
+                        st.scroll_vel_x = st.scroll_vel_x * 0.6 + move_x * 0.4
+                        st.scroll_vel_y = st.scroll_vel_y * 0.6 + move_y * 0.4
                         stride_x = int((CARD_WIDTH + CARD_SPACING) * st.gui_scale)
                         st.card_offset = clamp(st.card_offset, -(CARD_COUNT - 1) * stride_x, 0)
                         row_stride = int(ROW_BASE_SPACING * st.gui_scale)
@@ -329,10 +334,29 @@ class App:
         elif self._monitor.visible:
             self._monitor.draw(screen, st.gui_scale)
         else:
-            # While actively dragging, snap instantly so cards stick to finger
+            # Apply inertia when not actively dragging
+            if not (st.is_pinching and st.scroll_unlocked):
+                if abs(st.scroll_vel_x) > 0.1 or abs(st.scroll_vel_y) > 0.1:
+                    # Friction: dt-independent decay
+                    friction = st.scroll_friction ** (dt * 60.0)
+                    st.scroll_vel_x *= friction
+                    st.scroll_vel_y *= friction
+                    st.card_offset += st.scroll_vel_x
+                    st.category_offset += st.scroll_vel_y
+                    stride_x = int((CARD_WIDTH + CARD_SPACING) * st.gui_scale)
+                    st.card_offset = clamp(st.card_offset, -(CARD_COUNT - 1) * stride_x, 0)
+                    row_stride_clamp = int(ROW_BASE_SPACING * st.gui_scale)
+                    st.category_offset = clamp(st.category_offset, -(NUM_CATEGORIES - 1) * row_stride_clamp, 0)
+                else:
+                    st.scroll_vel_x = 0.0
+                    st.scroll_vel_y = 0.0
+
+            # While dragging, use faster smoothing so cards track finger smoothly
+            # When released, use softer smoothing for gentle settle
             if st.is_pinching and st.scroll_unlocked:
-                st.smooth_card_offset = st.card_offset
-                st.smooth_category_offset = st.category_offset
+                drag_sm = 1.0 - (1.0 - st.scroll_drag_smoothing) ** (dt * 60.0)
+                st.smooth_card_offset += (st.card_offset - st.smooth_card_offset) * drag_sm
+                st.smooth_category_offset += (st.category_offset - st.smooth_category_offset) * drag_sm
             else:
                 st.smooth_card_offset += (st.card_offset - st.smooth_card_offset) * sm
                 st.smooth_category_offset += (st.category_offset - st.smooth_category_offset) * sm

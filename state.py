@@ -96,8 +96,14 @@ class HandState:
         self.category_offset = 0.0
         self.smooth_card_offset = 0.0
         self.smooth_category_offset = 0.0
-        self.scroll_smoothing = 0.35        # snappier catch-up (less inertia)
+        self.scroll_smoothing = 0.22        # softer catch-up for silkier feel
+        self.scroll_drag_smoothing = 0.55   # while dragging — still smooth but tracks finger
         self.scroll_gain = 2.5              # less overshoot
+
+        # inertia (fling momentum after releasing pinch)
+        self.scroll_vel_x = 0.0
+        self.scroll_vel_y = 0.0
+        self.scroll_friction = 0.92         # velocity multiplier per frame (lower = stops faster)
 
         # pinch state
         self.is_pinching = False
