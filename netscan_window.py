@@ -573,7 +573,7 @@ class NetScanWindow:
         # ── Footer: buttons ──
         footer_y = win.y + win.height - footer_h
         if p:
-            tc.draw_separator(surface, win.x + 10, footer_y, win.width - 20, s, p)
+            tc.draw_separator(surface, win.x + int(10 * s), win.right - int(10 * s), footer_y, p)
 
         btn_w = int(100 * s)
         btn_h = int(32 * s)

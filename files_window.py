@@ -469,19 +469,43 @@ class FilesWindow:
                     br = max(4, int(8 * s))
 
                     if idx == self._selected_idx:
-                        # Selected: filled highlight + bright border
+                        # Selected: frosted glass highlight + bright border
                         if p:
+                            # Frosted glass selected cell
+                            glass = pygame.Surface((box_r.width, box_r.height), pygame.SRCALPHA)
+                            pygame.draw.rect(glass, (*p["panel"], 180), glass.get_rect(), border_radius=br)
+                            surface.blit(glass, box_r.topleft)
+                            rim = pygame.Surface((box_r.width, box_r.height), pygame.SRCALPHA)
+                            pygame.draw.rect(rim, (*p["dim"][:3], 22), rim.get_rect(), border_radius=br)
+                            m = max(2, int(3 * s))
+                            pygame.draw.rect(rim, (0, 0, 0, 22),
+                                             (m, m, box_r.width - m * 2, box_r.height - m * 2),
+                                             border_radius=max(2, br - m))
+                            surface.blit(rim, box_r.topleft)
+                            # Selection glow
                             sel_s = pygame.Surface((box_r.width, box_r.height), pygame.SRCALPHA)
                             sel_c = p["sel_bg"] if len(p["sel_bg"]) == 4 else (*p["sel_bg"][:3], 120)
                             sel_s.fill(sel_c)
                             surface.blit(sel_s, box_r.topleft)
                             pygame.draw.rect(surface, p["bright"], box_r, max(2, int(2 * s)), br)
+                            # Corner brackets
+                            cb = max(3, int(6 * s))
+                            cb_col = p["bright"]
+                            bx, by2 = box_r.x, box_r.y
+                            bx2, by3 = box_r.right, box_r.bottom
+                            pygame.draw.line(surface, cb_col, (bx + 3, by2 + 3), (bx + 3 + cb, by2 + 3), 1)
+                            pygame.draw.line(surface, cb_col, (bx + 3, by2 + 3), (bx + 3, by2 + 3 + cb), 1)
+                            pygame.draw.line(surface, cb_col, (bx2 - 4, by3 - 4), (bx2 - 4 - cb, by3 - 4), 1)
+                            pygame.draw.line(surface, cb_col, (bx2 - 4, by3 - 4), (bx2 - 4, by3 - 4 - cb), 1)
                         else:
                             pygame.draw.rect(surface, _SELECTED, box_r, border_radius=br)
                             pygame.draw.rect(surface, _BLUE, box_r, width=2, border_radius=br)
                     else:
-                        # Unselected: subtle outline box (like OS explorer)
+                        # Unselected: frosted glass outline box
                         if p:
+                            glass = pygame.Surface((box_r.width, box_r.height), pygame.SRCALPHA)
+                            pygame.draw.rect(glass, (*p["panel"], 100), glass.get_rect(), border_radius=br)
+                            surface.blit(glass, box_r.topleft)
                             pygame.draw.rect(surface, (*p["dim"][:3], 50) if len(p["dim"]) == 3
                                              else p["dim"], box_r, max(1, int(1 * s)), br)
                         else:

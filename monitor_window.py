@@ -946,17 +946,18 @@ class MonitorWindow:
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     def _draw_processes(self, surface, body, s, p, now, snap):
         accent = p["bright"] if p else _GREEN
-        border_col = p["btn_bdr"] if p else _DIM
-        panel_bg = p["panel"] if p else _PANEL
         text_hi = p["text_hi"] if p else _WHITE
         text_lo = p["text_lo"] if p else _GRAY
         x, y0 = body.x + int(4 * s), body.y + int(4 * s)
         w = body.width - int(8 * s)
-        br = max(4, int(6 * s))
 
         panel = pygame.Rect(x, y0, w, body.height - int(8 * s))
-        pygame.draw.rect(surface, panel_bg, panel, border_radius=br)
-        pygame.draw.rect(surface, border_col, panel, 1, border_radius=br)
+        if p:
+            tc.draw_sub_panel(surface, panel, s, p)
+        else:
+            br = max(4, int(6 * s))
+            pygame.draw.rect(surface, _PANEL, panel, border_radius=br)
+            pygame.draw.rect(surface, _DIM, panel, 1, border_radius=br)
 
         # Header row
         hdr_h = int(28 * s)
@@ -1303,27 +1304,30 @@ class MonitorWindow:
 
     def _draw_info_card(self, surface, x, y, w, s, p, now, title, rows) -> int:
         accent = p["bright"] if p else _CYAN
-        border = p["btn_bdr"] if p else _DIM
-        panel_bg = p["panel"] if p else _PANEL
         label_col = p["text_lo"] if p else _GRAY
         value_col = p["text_hi"] if p else _WHITE
         stripe_col = p["stripe"] if p else (18, 28, 40)
         row_h = int(22 * s)
         title_h = int(26 * s)
         card_h = title_h + len(rows) * row_h + int(8 * s)
-        br = max(4, int(6 * s))
         r = pygame.Rect(x, y, w, card_h)
-        pygame.draw.rect(surface, panel_bg, r, border_radius=br)
-        pygame.draw.rect(surface, border, r, 1, border_radius=br)
 
-        th = pygame.Surface((w, title_h), pygame.SRCALPHA)
-        pulse = 0.6 + 0.4 * (0.5 + 0.5 * math.sin(now * 1.5))
-        th.fill((*accent[:3], int(18 * pulse)))
-        surface.blit(th, (x, y))
-        t = _f(int(15 * s)).render(title, True, accent)
-        surface.blit(t, (x + int(8 * s), y + (title_h - t.get_height()) // 2))
+        if p:
+            cy = tc.draw_sub_panel(surface, r, s, p, title=title, accent_col=accent)
+        else:
+            br = max(4, int(6 * s))
+            panel_bg = _PANEL
+            border = _DIM
+            pygame.draw.rect(surface, panel_bg, r, border_radius=br)
+            pygame.draw.rect(surface, border, r, 1, border_radius=br)
+            th = pygame.Surface((w, title_h), pygame.SRCALPHA)
+            pulse = 0.6 + 0.4 * (0.5 + 0.5 * math.sin(now * 1.5))
+            th.fill((*accent[:3], int(18 * pulse)))
+            surface.blit(th, (x, y))
+            t = _f(int(15 * s)).render(title, True, accent)
+            surface.blit(t, (x + int(8 * s), y + (title_h - t.get_height()) // 2))
+            cy = y + title_h + int(2 * s)
 
-        cy = y + title_h + int(2 * s)
         for i, (label, value) in enumerate(rows):
             # Alternating row stripe
             if i % 2 == 0:
@@ -1353,8 +1357,6 @@ class MonitorWindow:
         label_h = int(18 * s)
         col = col_hi if pct > 85 else (col_mid if pct > 60 else col_low)
         accent = p["bright"] if p else col
-        panel_bg = p["panel"] if p else _PANEL
-        track_border = p["dim"] if p else _DIM
         br = max(3, int(4 * s))
 
         ft = _f(int(16 * s)).render(f"{label}  {pct:.1f}%", True, accent)
@@ -1362,8 +1364,21 @@ class MonitorWindow:
 
         bar_y = y + label_h + int(2 * s)
         bar_rect = pygame.Rect(x, bar_y, w, bar_h)
-        pygame.draw.rect(surface, panel_bg, bar_rect, border_radius=br)
-        pygame.draw.rect(surface, track_border, bar_rect, 1, border_radius=br)
+        if p:
+            # Frosted bar track
+            track_s = pygame.Surface((w, bar_h), pygame.SRCALPHA)
+            pygame.draw.rect(track_s, (*p["panel"], 160), (0, 0, w, bar_h), border_radius=br)
+            surface.blit(track_s, (x, bar_y))
+            rim_s = pygame.Surface((w, bar_h), pygame.SRCALPHA)
+            pygame.draw.rect(rim_s, (*p["dim"][:3], 30), (0, 0, w, bar_h), border_radius=br)
+            m = 1
+            pygame.draw.rect(rim_s, (0, 0, 0, 30), (m, m, w - m * 2, bar_h - m * 2),
+                             border_radius=max(1, br - 1))
+            surface.blit(rim_s, (x, bar_y))
+            pygame.draw.rect(surface, p["dim"], bar_rect, 1, border_radius=br)
+        else:
+            pygame.draw.rect(surface, _PANEL, bar_rect, border_radius=br)
+            pygame.draw.rect(surface, _DIM, bar_rect, 1, border_radius=br)
 
         fill_w = int(w * min(pct, 100.0) / 100.0)
         if fill_w > 0:
@@ -1407,16 +1422,17 @@ class MonitorWindow:
     def _draw_graph(self, surface, x, y, w, h, s, p, now,
                     label, history, color, max_val, hist_idx) -> int:
         accent = p["bright"] if p else color
-        panel_bg = p["panel"] if p else _PANEL
-        border_col = p["dim"] if p else _DIM
         grid_col = p["sep"] if p else _DIM
-        br = max(4, int(6 * s))
         panel = pygame.Rect(x, y, w, h + int(20 * s))
-        pygame.draw.rect(surface, panel_bg, panel, border_radius=br)
-        pygame.draw.rect(surface, border_col, panel, 1, border_radius=br)
 
-        ft = _f(int(14 * s)).render(label, True, accent)
-        surface.blit(ft, (x + int(6 * s), y + int(3 * s)))
+        if p:
+            tc.draw_sub_panel(surface, panel, s, p, title=label, accent_col=accent)
+        else:
+            br = max(4, int(6 * s))
+            pygame.draw.rect(surface, _PANEL, panel, border_radius=br)
+            pygame.draw.rect(surface, _DIM, panel, 1, border_radius=br)
+            ft = _f(int(14 * s)).render(label, True, accent)
+            surface.blit(ft, (x + int(6 * s), y + int(3 * s)))
 
         gx = x + int(4 * s)
         gy = y + int(18 * s)
@@ -1458,16 +1474,18 @@ class MonitorWindow:
                          label, hist_a, hist_b, col_a, col_b, max_val,
                          hist_idx) -> int:
         accent = p["bright"] if p else col_a
-        panel_bg = p["panel"] if p else _PANEL
-        border_col = p["dim"] if p else _DIM
         grid_col = p["sep"] if p else _DIM
-        br = max(4, int(6 * s))
         panel = pygame.Rect(x, y, w, h + int(20 * s))
-        pygame.draw.rect(surface, panel_bg, panel, border_radius=br)
-        pygame.draw.rect(surface, border_col, panel, 1, border_radius=br)
 
-        ft = _f(int(14 * s)).render(label, True, accent)
-        surface.blit(ft, (x + int(6 * s), y + int(3 * s)))
+        if p:
+            tc.draw_sub_panel(surface, panel, s, p, title=label, accent_col=accent)
+        else:
+            br = max(4, int(6 * s))
+            pygame.draw.rect(surface, _PANEL, panel, border_radius=br)
+            pygame.draw.rect(surface, _DIM, panel, 1, border_radius=br)
+            ft = _f(int(14 * s)).render(label, True, accent)
+            surface.blit(ft, (x + int(6 * s), y + int(3 * s)))
+
         surface.blit(_f(int(12 * s)).render("IN", True, col_a),
                      (x + w - int(60 * s), y + int(3 * s)))
         surface.blit(_f(int(12 * s)).render("OUT", True, col_b),
@@ -1514,8 +1532,6 @@ class MonitorWindow:
                         core_vals: list[float]) -> int:
         """Vertical bar cluster showing per-core CPU utilisation."""
         accent = p["bright"] if p else _GREEN
-        border = p["btn_bdr"] if p else _DIM
-        panel_bg = p["panel"] if p else _PANEL
         dim_col = p["text_lo"] if p else _DIM
         n = len(core_vals)
         if n == 0:
@@ -1524,13 +1540,16 @@ class MonitorWindow:
         panel_h = int(80 * s)
         title_h = int(18 * s)
         total_h = title_h + panel_h + int(8 * s)
-        br = max(4, int(6 * s))
         panel = pygame.Rect(x, y, w, total_h)
-        pygame.draw.rect(surface, panel_bg, panel, border_radius=br)
-        pygame.draw.rect(surface, border, panel, 1, border_radius=br)
 
-        lbl = _f(int(14 * s)).render("PER-CORE CPU", True, accent)
-        surface.blit(lbl, (x + int(6 * s), y + int(2 * s)))
+        if p:
+            tc.draw_sub_panel(surface, panel, s, p, title="PER-CORE CPU", accent_col=accent)
+        else:
+            br = max(4, int(6 * s))
+            pygame.draw.rect(surface, _PANEL, panel, border_radius=br)
+            pygame.draw.rect(surface, _DIM, panel, 1, border_radius=br)
+            lbl = _f(int(14 * s)).render("PER-CORE CPU", True, accent)
+            surface.blit(lbl, (x + int(6 * s), y + int(2 * s)))
 
         bar_area_x = x + int(10 * s)
         bar_area_y = y + title_h + int(2 * s)
@@ -1588,18 +1607,19 @@ class MonitorWindow:
                            pressure: int) -> int:
         """Draw a memory pressure semicircle gauge (0=critical, 100=green)."""
         accent = p["bright"] if p else _CYAN
-        border = p["btn_bdr"] if p else _DIM
-        panel_bg = p["panel"] if p else _PANEL
         track_col = p["dark"] if p else (40, 40, 60)
 
         panel_h = int(68 * s)
-        br = max(4, int(6 * s))
         panel = pygame.Rect(x, y, w, panel_h)
-        pygame.draw.rect(surface, panel_bg, panel, border_radius=br)
-        pygame.draw.rect(surface, border, panel, 1, border_radius=br)
 
-        lbl = _f(int(14 * s)).render("MEMORY PRESSURE", True, accent)
-        surface.blit(lbl, (x + int(6 * s), y + int(3 * s)))
+        if p:
+            tc.draw_sub_panel(surface, panel, s, p, title="MEMORY PRESSURE", accent_col=accent)
+        else:
+            br = max(4, int(6 * s))
+            pygame.draw.rect(surface, _PANEL, panel, border_radius=br)
+            pygame.draw.rect(surface, _DIM, panel, 1, border_radius=br)
+            lbl = _f(int(14 * s)).render("MEMORY PRESSURE", True, accent)
+            surface.blit(lbl, (x + int(6 * s), y + int(3 * s)))
 
         # Arc params
         cx = x + w // 2
@@ -1657,8 +1677,6 @@ class MonitorWindow:
                             security: dict) -> int:
         """Draw ON/OFF security status badges for FileVault, Firewall, SIP."""
         accent = p["bright"] if p else _CYAN
-        border = p["btn_bdr"] if p else _DIM
-        panel_bg = p["panel"] if p else _PANEL
         label_col = p["text_hi"] if p else _WHITE
         on_col = p["mid"] if p else _GREEN
         off_col = p["danger"] if p else _RED
@@ -1672,20 +1690,24 @@ class MonitorWindow:
         title_h = int(26 * s)
         badge_h = int(28 * s)
         card_h = title_h + len(items) * (badge_h + int(4 * s)) + int(8 * s)
-        br = max(4, int(6 * s))
         panel = pygame.Rect(x, y, w, card_h)
-        pygame.draw.rect(surface, panel_bg, panel, border_radius=br)
-        pygame.draw.rect(surface, border, panel, 1, border_radius=br)
 
-        # Title bar
-        th = pygame.Surface((w, title_h), pygame.SRCALPHA)
+        if p:
+            by = tc.draw_sub_panel(surface, panel, s, p, title="SECURITY", accent_col=accent)
+            by += int(2 * s)
+        else:
+            br = max(4, int(6 * s))
+            pygame.draw.rect(surface, _PANEL, panel, border_radius=br)
+            pygame.draw.rect(surface, _DIM, panel, 1, border_radius=br)
+            th = pygame.Surface((w, title_h), pygame.SRCALPHA)
+            pulse = 0.6 + 0.4 * (0.5 + 0.5 * math.sin(now * 1.5))
+            th.fill((*accent[:3], int(18 * pulse)))
+            surface.blit(th, (x, y))
+            t = _f(int(15 * s)).render("SECURITY", True, accent)
+            surface.blit(t, (x + int(8 * s), y + (title_h - t.get_height()) // 2))
+            by = y + title_h + int(4 * s)
+
         pulse = 0.6 + 0.4 * (0.5 + 0.5 * math.sin(now * 1.5))
-        th.fill((*accent[:3], int(18 * pulse)))
-        surface.blit(th, (x, y))
-        t = _f(int(15 * s)).render("SECURITY", True, accent)
-        surface.blit(t, (x + int(8 * s), y + (title_h - t.get_height()) // 2))
-
-        by = y + title_h + int(4 * s)
         for label, status in items:
             is_on = status == "ON"
             col = on_col if is_on else off_col

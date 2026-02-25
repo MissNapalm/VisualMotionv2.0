@@ -329,3 +329,119 @@ def draw_footer_text(surface, text, win, s, p):
     """Dim text near the bottom of the window."""
     img = _f(int(16 * s)).render(text, True, p["text_lo"])
     surface.blit(img, (win.x + int(16 * s), win.bottom - int(22 * s)))
+
+
+# ───────────────────────────────────────────────────────────────────
+#  Sub-panel (interior card / info box) — Minority-Report glass style
+# ───────────────────────────────────────────────────────────────────
+
+def draw_sub_panel(surface, rect, s, p, title=None, accent_col=None):
+    """Draw an interior sub-panel with frosted-glass MR styling.
+
+    * Sci-fi: translucent glass fill, inner rim highlight, thin border,
+              corner-bracket motifs, optional title with arc accent.
+    * Ice: angular cut-corner panel with grid dots.
+    * Returns the content-area y (below title if present)."""
+    x, y, w, h = rect.x, rect.y, rect.width, rect.height
+    ac = accent_col or p["bright"]
+
+    if not is_ice_theme():
+        # ── Minority-Report rounded frosted sub-panel ──
+        br = max(6, int(10 * s))
+
+        # Glass fill (translucent)
+        glass = pygame.Surface((w, h), pygame.SRCALPHA)
+        pygame.draw.rect(glass, (*p["panel"], 180), (0, 0, w, h), border_radius=br)
+        surface.blit(glass, (x, y))
+
+        # Inner rim highlight
+        rim = pygame.Surface((w, h), pygame.SRCALPHA)
+        pygame.draw.rect(rim, (*p["dim"][:3], 18), (0, 0, w, h), border_radius=br)
+        m = max(2, int(3 * s))
+        pygame.draw.rect(rim, (0, 0, 0, 18), (m, m, w - m * 2, h - m * 2),
+                         border_radius=max(3, br - m))
+        surface.blit(rim, (x, y))
+
+        # Border
+        bw = max(1, int(1 * s))
+        pygame.draw.rect(surface, p["dim"], rect, width=bw, border_radius=br)
+
+        # Corner bracket motifs
+        cb = max(4, int(8 * s))
+        cb_col = (*p["dim"][:3], 80)
+        # top-left
+        pygame.draw.line(surface, cb_col, (x + 4, y + 4), (x + 4 + cb, y + 4), 1)
+        pygame.draw.line(surface, cb_col, (x + 4, y + 4), (x + 4, y + 4 + cb), 1)
+        # top-right
+        pygame.draw.line(surface, cb_col, (x + w - 5, y + 4), (x + w - 5 - cb, y + 4), 1)
+        pygame.draw.line(surface, cb_col, (x + w - 5, y + 4), (x + w - 5, y + 4 + cb), 1)
+        # bottom-left
+        pygame.draw.line(surface, cb_col, (x + 4, y + h - 5), (x + 4 + cb, y + h - 5), 1)
+        pygame.draw.line(surface, cb_col, (x + 4, y + h - 5), (x + 4, y + h - 5 - cb), 1)
+        # bottom-right
+        pygame.draw.line(surface, cb_col, (x + w - 5, y + h - 5), (x + w - 5 - cb, y + h - 5), 1)
+        pygame.draw.line(surface, cb_col, (x + w - 5, y + h - 5), (x + w - 5, y + h - 5 - cb), 1)
+
+        content_y = y + int(4 * s)
+
+        if title:
+            title_h = int(22 * s)
+            # Title bar fill (subtle glow)
+            th_surf = pygame.Surface((w, title_h), pygame.SRCALPHA)
+            pygame.draw.rect(th_surf, (*ac[:3], 16), (0, 0, w, title_h),
+                             border_top_left_radius=br, border_top_right_radius=br)
+            surface.blit(th_surf, (x, y))
+
+            # Small arc accent (MR circular motif)
+            arc_r = max(4, int(6 * s))
+            arc_cx = x + int(10 * s)
+            arc_cy = y + title_h // 2
+            arc_rect = pygame.Rect(arc_cx - arc_r, arc_cy - arc_r, arc_r * 2, arc_r * 2)
+            pygame.draw.arc(surface, (*ac[:3], 80), arc_rect,
+                            math.radians(30), math.radians(330), max(1, int(1 * s)))
+
+            # Title text
+            t = _f(int(14 * s)).render(title, True, ac)
+            surface.blit(t, (x + int(20 * s), y + (title_h - t.get_height()) // 2))
+
+            # Divider below title
+            inset = max(4, int(8 * s))
+            pygame.draw.line(surface, (*p["dim"][:3], 60),
+                             (x + inset, y + title_h), (x + w - inset, y + title_h), 1)
+            content_y = y + title_h + int(2 * s)
+
+        return content_y
+    else:
+        # ── Ice angular sub-panel ──
+        cut = max(4, int(10 * s))
+        pts = [
+            (x, y), (x + w - cut, y), (x + w, y + cut),
+            (x + w, y + h), (x + cut, y + h), (x, y + h - cut),
+        ]
+        pygame.draw.polygon(surface, p["panel"], pts)
+        bw = max(1, int(2 * s))
+        pygame.draw.polygon(surface, p["dim"], pts, bw)
+
+        # Corner ticks
+        tk = max(3, int(8 * s))
+        pygame.draw.line(surface, p["bright"], (x, y), (x + tk, y), 1)
+        pygame.draw.line(surface, p["bright"], (x, y), (x, y + tk), 1)
+        pygame.draw.line(surface, p["bright"], (x + w, y + h), (x + w - tk, y + h), 1)
+        pygame.draw.line(surface, p["bright"], (x + w, y + h), (x + w, y + h - tk), 1)
+
+        content_y = y + int(4 * s)
+
+        if title:
+            title_h = int(22 * s)
+            hdr_pts = [
+                (x, y), (x + w - cut, y), (x + w, y + cut),
+                (x + w, y + title_h), (x, y + title_h),
+            ]
+            pygame.draw.polygon(surface, p["header"], hdr_pts)
+            pygame.draw.line(surface, p["bright"], (x, y + title_h),
+                             (x + w, y + title_h), 1)
+            t = _f(int(14 * s)).render(title, True, ac)
+            surface.blit(t, (x + int(8 * s), y + (title_h - t.get_height()) // 2))
+            content_y = y + title_h + int(2 * s)
+
+        return content_y
