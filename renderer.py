@@ -181,6 +181,159 @@ def draw_hex_rain(surface, win_w, win_h):
 
 
 # ==============================
+# Ambient system-monitor background (sci-fi theme — behind cards)
+# ==============================
+# Rolling data buffers — fake but plausible system metrics
+_SYSMON_HISTORY = 200          # samples per graph
+_SYSMON_GRAPH_W = 340          # pixels wide
+_SYSMON_GRAPH_H = 70           # pixels tall per graph
+_SYSMON_GRAPHS = 3             # CPU, MEM, NET
+_sysmon_data: list[list[float]] | None = None
+_sysmon_t0 = 0.0
+_sysmon_last_push = 0.0
+_sysmon_rng = _star_rand.Random(777)
+
+
+def _init_sysmon_data():
+    global _sysmon_data, _sysmon_t0, _sysmon_last_push
+    _sysmon_t0 = _time.time()
+    _sysmon_last_push = _sysmon_t0
+    _sysmon_data = []
+    for g in range(_SYSMON_GRAPHS):
+        # Pre-fill with smooth random data
+        buf = []
+        val = _sysmon_rng.uniform(0.2, 0.6)
+        for _ in range(_SYSMON_HISTORY):
+            val += _sysmon_rng.uniform(-0.04, 0.04)
+            val = max(0.05, min(0.95, val))
+            buf.append(val)
+        _sysmon_data.append(buf)
+
+
+def _push_sysmon_sample():
+    """Add a new data point to each graph (called ~15 times/sec)."""
+    global _sysmon_last_push
+    now = _time.time()
+    if now - _sysmon_last_push < 0.066:   # ~15 Hz update rate
+        return
+    _sysmon_last_push = now
+    t = now - _sysmon_t0
+    for g in range(_SYSMON_GRAPHS):
+        prev = _sysmon_data[g][-1]
+        # Each graph has a different "personality"
+        if g == 0:   # CPU — bursty, medium frequency
+            drift = math.sin(t * 0.7 + 1.0) * 0.03 + _sysmon_rng.uniform(-0.025, 0.025)
+            # Occasional spikes
+            if _sysmon_rng.random() < 0.03:
+                drift += _sysmon_rng.uniform(0.1, 0.3)
+        elif g == 1: # MEM — slow, gradual drift
+            drift = math.sin(t * 0.2) * 0.008 + _sysmon_rng.uniform(-0.008, 0.008)
+        else:        # NET — spiky, fast
+            drift = _sysmon_rng.uniform(-0.06, 0.06)
+            if _sysmon_rng.random() < 0.08:
+                drift += _sysmon_rng.choice([-1, 1]) * _sysmon_rng.uniform(0.08, 0.25)
+        val = max(0.03, min(0.97, prev + drift))
+        _sysmon_data[g].append(val)
+        if len(_sysmon_data[g]) > _SYSMON_HISTORY:
+            _sysmon_data[g].pop(0)
+
+
+def draw_sysmon_bg(surface, win_w, win_h):
+    """Draw ambient animated system-monitor line graphs behind the cards.
+    Three translucent graph panels arrayed across the background.
+    Only active on sci-fi theme. Returns True if drawn."""
+    if _theme_id != _THEME_SCIFI:
+        return False
+    if _sysmon_data is None:
+        _init_sysmon_data()
+    _push_sysmon_sample()
+
+    now = _time.time()
+    gw = _SYSMON_GRAPH_W
+    gh = _SYSMON_GRAPH_H
+
+    _GRAPH_LABELS = ["CPU LOAD", "MEMORY", "NETWORK I/O"]
+    _GRAPH_COLORS = [
+        (120, 180, 220),    # cool blue (CPU)
+        (100, 210, 170),    # teal-green (MEM)
+        (170, 140, 220),    # soft purple (NET)
+    ]
+    _GRAPH_FILL_ALPHA = [16, 14, 12]
+
+    # Horizontal layout: distribute graphs along the bottom edge
+    total_w = gw * _SYSMON_GRAPHS + 40 * (_SYSMON_GRAPHS - 1)
+    start_x = (win_w - total_w) // 2
+    base_y = win_h - gh - 160   # above the HUD telemetry panels at the very bottom
+
+    for g in range(_SYSMON_GRAPHS):
+        gx = start_x + g * (gw + 40)
+        gy = base_y
+
+        # ── Frosted glass panel ──
+        panel = pygame.Surface((gw + 16, gh + 32), pygame.SRCALPHA)
+        pygame.draw.rect(panel, (*_MR_GLASS, 40), (0, 0, gw + 16, gh + 32), border_radius=6)
+        pygame.draw.rect(panel, (*_MR_DIM, 20), (0, 0, gw + 16, gh + 32), width=1, border_radius=6)
+        surface.blit(panel, (gx - 8, gy - 22))
+
+        # ── Label ──
+        lbl_col = _GRAPH_COLORS[g]
+        lbl = _render_text(_GRAPH_LABELS[g], 11, (*lbl_col[:3],))
+        surface.blit(lbl, (gx, gy - 16))
+
+        # ── Percentage readout (latest value) ──
+        pct = _sysmon_data[g][-1] * 100
+        pct_str = f"{pct:4.1f}%"
+        pct_img = _render_text(pct_str, 11, (*lbl_col[:3],))
+        surface.blit(pct_img, (gx + gw - pct_img.get_width(), gy - 16))
+
+        # ── Horizontal grid lines (faint) ──
+        for gi in range(5):
+            grid_y = gy + int(gi * gh / 4)
+            pygame.draw.line(surface, (*_MR_FAINT, 18),
+                             (gx, grid_y), (gx + gw, grid_y), 1)
+
+        # ── Build polyline from data ──
+        data = _sysmon_data[g]
+        visible = min(len(data), _SYSMON_HISTORY)
+        step = gw / max(1, visible - 1)
+        pts = []
+        for i in range(visible):
+            px = gx + int(i * step)
+            py = gy + gh - int(data[len(data) - visible + i] * gh)
+            pts.append((px, py))
+
+        if len(pts) > 1:
+            # ── Filled area under the curve (very faint) ──
+            fill_pts = list(pts) + [(pts[-1][0], gy + gh), (pts[0][0], gy + gh)]
+            fill_surf = pygame.Surface((gw + 2, gh + 2), pygame.SRCALPHA)
+            # Shift points relative to fill_surf origin
+            shifted = [(p[0] - gx, p[1] - gy) for p in fill_pts]
+            try:
+                pygame.draw.polygon(fill_surf, (*_GRAPH_COLORS[g], _GRAPH_FILL_ALPHA[g]),
+                                    shifted)
+                surface.blit(fill_surf, (gx, gy))
+            except Exception:
+                pass  # degenerate polygon edge case
+
+            # ── Line graph ──
+            line_alpha = 50
+            line_surf = pygame.Surface((gw + 2, gh + 2), pygame.SRCALPHA)
+            shifted_line = [(p[0] - gx, p[1] - gy) for p in pts]
+            pygame.draw.lines(line_surf, (*_GRAPH_COLORS[g], line_alpha), False, shifted_line, 1)
+            surface.blit(line_surf, (gx, gy))
+
+            # ── Bright dot at the latest point (rightmost) ──
+            latest = pts[-1]
+            dot_pulse = int(60 + 30 * math.sin(now * 4.0 + g * 2.0))
+            pygame.draw.circle(surface, (*_GRAPH_COLORS[g], dot_pulse),
+                               latest, 3)
+
+        # ── Bottom axis line ──
+        pygame.draw.line(surface, (*_MR_DIM, 30),
+                         (gx, gy + gh), (gx + gw, gy + gh), 1)
+
+
+# ==============================
 # Theme toggle button (top-left)
 # ==============================
 _THEME_BTN_W = 90
@@ -530,7 +683,9 @@ def _get_card_classic(app_name, w, h, gui_scale, is_selected):
     color = _app_color_cache[app_name]
 
     card_rect = pygame.Rect(cx - w // 2, cy - h // 2, w, h)
-    pygame.draw.rect(surf, color, card_rect, border_radius=br)
+    card_alpha_surf = pygame.Surface((w, h), pygame.SRCALPHA)
+    pygame.draw.rect(card_alpha_surf, (*color, 160), (0, 0, w, h), border_radius=br)
+    surf.blit(card_alpha_surf, (card_rect.x, card_rect.y))
 
     if is_selected:
         sel = pygame.Rect(card_rect.x - int(6 * gui_scale), card_rect.y - int(6 * gui_scale),
@@ -562,13 +717,13 @@ def _get_card_scifi(app_name, w, h, gui_scale, is_selected):
     line_inset = max(8, int(16 * gui_scale))
 
     # ── 1. Frosted-glass panel body (semi-transparent) ──
-    glass_alpha = 115 if is_selected else 85
+    glass_alpha = 70 if is_selected else 45
     glass_surf = pygame.Surface((rw, rh), pygame.SRCALPHA)
     pygame.draw.rect(glass_surf, (*_MR_GLASS, glass_alpha), (0, 0, rw, rh), border_radius=br)
     surf.blit(glass_surf, (rx, ry))
 
     # ── 2. Subtle inner edge highlight (frosted glass rim) ──
-    rim_alpha = 30 if is_selected else 18
+    rim_alpha = 20 if is_selected else 12
     rim_surf = pygame.Surface((rw, rh), pygame.SRCALPHA)
     pygame.draw.rect(rim_surf, (*_MR_DIM, rim_alpha), (0, 0, rw, rh), border_radius=br)
     inner_margin = max(3, int(6 * gui_scale))
@@ -810,7 +965,7 @@ def _get_card_ice(app_name, w, h, gui_scale, is_selected):
     bar_h = max(8, int(rh * _BAR_HEIGHT_FRAC))
     corner_cut = max(6, int(18 * gui_scale))
 
-    # ── Panel body ──
+    # ── Panel body (semi-transparent) ──
     body_color = _ICE_PANEL_BG_SEL if is_selected else _ICE_PANEL_BG
     body_pts = [
         (rx, ry),
@@ -820,7 +975,10 @@ def _get_card_ice(app_name, w, h, gui_scale, is_selected):
         (rx + corner_cut, ry + rh),
         (rx, ry + rh - corner_cut),
     ]
-    pygame.draw.polygon(surf, body_color, body_pts)
+    body_surf = pygame.Surface((sw, sh), pygame.SRCALPHA)
+    body_alpha = 140 if is_selected else 100
+    pygame.draw.polygon(body_surf, (*body_color, body_alpha), body_pts)
+    surf.blit(body_surf, (0, 0))
 
     # ── Scanline overlay ──
     scan_surf = pygame.Surface((rw, rh), pygame.SRCALPHA)

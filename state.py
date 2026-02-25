@@ -14,7 +14,7 @@ CARD_SPACING = 50
 ROW_BASE_SPACING = CARD_HEIGHT + 80
 
 CATEGORIES = [
-    ["Mail", "Music", "Browser", "Messages", "Calendar", "Maps", "Camera"],
+    ["Mail", "Music", "Browser", "Messages", "Calendar", "NetScan", "Camera"],
     ["Photos", "Notes", "Reminders", "Files", "Weather", "Monitor", "Sand"],
     ["YouTube", "Netflix", "Twitch", "Spotify", "Podcasts", "Books", "Games"],
 ]
@@ -22,7 +22,7 @@ NUM_CATEGORIES = len(CATEGORIES)
 
 APP_COLORS = {
     "Mail": (74, 144, 226),   "Music": (252, 61, 86),    "Safari": (35, 142, 250),
-    "Messages": (76, 217, 100), "Calendar": (252, 61, 57), "Maps": (89, 199, 249),
+    "Messages": (76, 217, 100), "Calendar": (252, 61, 57), "NetScan": (0, 220, 220),
     "Camera": (138, 138, 142), "Photos": (252, 203, 47),  "Notes": (255, 214, 10),
     "Reminders": (255, 69, 58), "Files": (70, 140, 240),    "Weather": (99, 204, 250),
     "Monitor": (0, 230, 120),    "Sand": (252, 61, 86),     "YouTube": (255, 0, 0),

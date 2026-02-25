@@ -104,6 +104,10 @@ class FilesWindow:
 
         self._ROW_H = 42  # row height in pixels (before gui_scale)
 
+        # Smooth grid interpolation — tracks smoothed (x, y) per entry index
+        self._smooth_pos: dict[int, tuple[float, float]] = {}
+        self._smooth_alpha = 0.18  # interpolation speed (0..1, lower = smoother)
+
     # ── open / close ────────────────────────────────────────────────
     def open(self):
         self.visible = True
@@ -122,6 +126,7 @@ class FilesWindow:
         self._entries.clear()
         self._selected_idx = -1
         self._scroll_offset = 0
+        self._smooth_pos.clear()  # reset interpolation on directory change
         try:
             raw = os.listdir(self._cwd)
         except OSError:
@@ -432,8 +437,23 @@ class FilesWindow:
                     if idx >= len(self._entries):
                         break
                     entry = self._entries[idx]
-                    cx = grid_x0 + col * icon_cell_w + icon_cell_w // 2
-                    cy = body_top + row * icon_cell_h - self._scroll_offset + icon_cell_h // 2
+                    # Target position for this entry
+                    target_cx = float(grid_x0 + col * icon_cell_w + icon_cell_w // 2)
+                    target_cy = float(body_top + row * icon_cell_h - self._scroll_offset + icon_cell_h // 2)
+
+                    # Smooth interpolation — chase target position
+                    if idx in self._smooth_pos:
+                        sx, sy = self._smooth_pos[idx]
+                        a = self._smooth_alpha
+                        sx += (target_cx - sx) * a
+                        sy += (target_cy - sy) * a
+                        self._smooth_pos[idx] = (sx, sy)
+                    else:
+                        sx, sy = target_cx, target_cy
+                        self._smooth_pos[idx] = (sx, sy)
+
+                    cx = int(sx)
+                    cy = int(sy)
 
                     if cy + icon_cell_h // 2 < body_top or cy - icon_cell_h // 2 > body_top + body_h:
                         continue

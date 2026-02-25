@@ -19,12 +19,13 @@ from state import (
 from renderer import (clamp, draw_cards, draw_wheel, draw_camera_thumbnail,
                       draw_theme_button, theme_button_hit, toggle_theme, get_bg_color,
                       draw_helix_graph, is_ice_theme, draw_stars_bg, draw_hex_rain,
-                      draw_hud_overlay)
+                      draw_hud_overlay, draw_sysmon_bg)
 from weather_window import WeatherWindow
 from todo_window import TodoWindow
 from sand_window import SandWindow
 from files_window import FilesWindow
 from monitor_window import MonitorWindow
+from netscan_window import NetScanWindow
 
 
 class App:
@@ -32,17 +33,27 @@ class App:
 
     def __init__(self):
         pygame.init()
-        # SCALED uses an internal GPU texture (Metal on macOS) with true vsync —
-        # this is the only reliable way to eliminate tearing on Apple Silicon.
+
+        # ── Fullscreen: detect native display resolution ──
+        import state as _state_mod
+        disp_info = pygame.display.Info()
+        _state_mod.WINDOW_WIDTH = disp_info.current_w
+        _state_mod.WINDOW_HEIGHT = disp_info.current_h
+        # Re-import so local names match the updated globals
+        global WINDOW_WIDTH, WINDOW_HEIGHT
+        WINDOW_WIDTH = _state_mod.WINDOW_WIDTH
+        WINDOW_HEIGHT = _state_mod.WINDOW_HEIGHT
+
         try:
             self.screen = pygame.display.set_mode(
                 (WINDOW_WIDTH, WINDOW_HEIGHT),
-                pygame.DOUBLEBUF | pygame.SCALED,
+                pygame.FULLSCREEN | pygame.DOUBLEBUF | pygame.SCALED,
                 vsync=1,
             )
         except Exception:
             self.screen = pygame.display.set_mode(
-                (WINDOW_WIDTH, WINDOW_HEIGHT), pygame.DOUBLEBUF
+                (WINDOW_WIDTH, WINDOW_HEIGHT),
+                pygame.FULLSCREEN | pygame.DOUBLEBUF,
             )
         pygame.display.set_caption("Gesture Carousel")
         self.clock = pygame.time.Clock()
@@ -72,6 +83,7 @@ class App:
         self._sand = SandWindow(WINDOW_WIDTH, WINDOW_HEIGHT)
         self._files = FilesWindow(WINDOW_WIDTH, WINDOW_HEIGHT)
         self._monitor = MonitorWindow(WINDOW_WIDTH, WINDOW_HEIGHT)
+        self._netscan = NetScanWindow(WINDOW_WIDTH, WINDOW_HEIGHT)
         self._cur_thumb = (0, 0)
         self._cur_index = (0, 0)
         # Mouse input state (alternative to hand tracking)
@@ -82,7 +94,7 @@ class App:
 
     @property
     def _any_app_visible(self):
-        return self._weather.visible or self._todo.visible or self._sand.visible or self._files.visible or self._monitor.visible
+        return self._weather.visible or self._todo.visible or self._sand.visible or self._files.visible or self._monitor.visible or self._netscan.visible
 
     def _process_wheel(self, hand):
         st = self.state
@@ -192,6 +204,12 @@ class App:
                     if total > 8:
                         self._monitor.handle_pinch_drag(px, py, st.gui_scale)
 
+                # Feed pinch-drag to NetScan app (scroll)
+                if self._netscan.visible and st.pinch_start_pos:
+                    total = math.hypot(px - st.pinch_start_pos[0], py - st.pinch_start_pos[1])
+                    if total > 8:
+                        self._netscan.handle_pinch_drag(px, py, st.gui_scale)
+
                 # Only scroll when no app window is open
                 if not self._any_app_visible and st.scroll_unlocked and st.pinch_start_pos:
                     total = math.hypot(px - st.pinch_start_pos[0], py - st.pinch_start_pos[1])
@@ -231,6 +249,9 @@ class App:
             # Also end monitor drag tracking
             if self._monitor.visible:
                 self._monitor.handle_pinch_drag_end()
+            # Also end netscan drag tracking
+            if self._netscan.visible:
+                self._netscan.handle_pinch_drag_end()
 
     def _resolve_taps(self, all_rects):
         st = self.state
@@ -248,6 +269,8 @@ class App:
                 self._files.handle_tap(tx, ty, st.gui_scale)
             elif self._monitor.visible:
                 self._monitor.handle_tap(tx, ty, st.gui_scale)
+            elif self._netscan.visible:
+                self._netscan.handle_tap(tx, ty, st.gui_scale)
             else:
                 for rect, ci, ca in all_rects:
                     if rect.collidepoint(tx, ty):
@@ -284,6 +307,11 @@ class App:
                             if self._snd_doublepinch:
                                 self._snd_doublepinch.play()
                             print("Opened System Monitor")
+                        elif name == "NetScan":
+                            self._netscan.open()
+                            if self._snd_doublepinch:
+                                self._snd_doublepinch.play()
+                            print("Opened Network Discovery")
                         break
             self._tap = None
 
@@ -295,6 +323,8 @@ class App:
         draw_stars_bg(screen)
         # Scrolling hex rain on sci-fi theme
         draw_hex_rain(screen, WINDOW_WIDTH, WINDOW_HEIGHT)
+        # Ambient system-monitor graphs (sci-fi background, behind cards)
+        draw_sysmon_bg(screen, WINDOW_WIDTH, WINDOW_HEIGHT)
 
         # Delta-time for frame-rate independent smoothing
         now = time.time()
@@ -318,6 +348,8 @@ class App:
             self._files.draw(screen, st.gui_scale)
         elif self._monitor.visible:
             self._monitor.draw(screen, st.gui_scale)
+        elif self._netscan.visible:
+            self._netscan.draw(screen, st.gui_scale)
         else:
             # Apply inertia when not actively dragging
             if not (st.is_pinching and st.scroll_unlocked):
@@ -415,6 +447,8 @@ class App:
                     self._files.handle_scroll(-event.y)
                 if event.type == pygame.MOUSEWHEEL and self._monitor.visible:
                     self._monitor.handle_scroll(-event.y)
+                if event.type == pygame.MOUSEWHEEL and self._netscan.visible:
+                    self._netscan.handle_scroll(-event.y)
                 # --- Mouse input (alternative to hand gestures) ---
                 if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     mx, my = event.pos
@@ -434,6 +468,8 @@ class App:
                         self._files.handle_tap(mx, my, self.state.gui_scale)
                     elif self._monitor.visible:
                         self._monitor.handle_tap(mx, my, self.state.gui_scale)
+                    elif self._netscan.visible:
+                        self._netscan.handle_tap(mx, my, self.state.gui_scale)
                 elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
                     if self._mouse_down:
                         mx, my = event.pos
@@ -454,6 +490,8 @@ class App:
                             self._files.handle_pinch_drag_end()
                         if self._monitor.visible:
                             self._monitor.handle_pinch_drag_end()
+                        if self._netscan.visible:
+                            self._netscan.handle_pinch_drag_end()
                         self._mouse_down = False
                         self._mouse_down_pos = None
                 elif event.type == pygame.MOUSEMOTION and self._mouse_down:
@@ -473,6 +511,11 @@ class App:
                                            my - self._mouse_down_pos[1])
                         if total > 8:
                             self._monitor.handle_pinch_drag(mx, my, self.state.gui_scale)
+                    elif self._netscan.visible and self._mouse_down_pos:
+                        total = math.hypot(mx - self._mouse_down_pos[0],
+                                           my - self._mouse_down_pos[1])
+                        if total > 8:
+                            self._netscan.handle_pinch_drag(mx, my, self.state.gui_scale)
             hand = self.tracker.latest()
             if hand is not None:
                 self._last_hand = hand
