@@ -684,7 +684,8 @@ def _get_card_classic(app_name, w, h, gui_scale, is_selected):
 
     card_rect = pygame.Rect(cx - w // 2, cy - h // 2, w, h)
     card_alpha_surf = pygame.Surface((w, h), pygame.SRCALPHA)
-    pygame.draw.rect(card_alpha_surf, (*color, 160), (0, 0, w, h), border_radius=br)
+    card_alpha = 210 if is_selected else 195
+    pygame.draw.rect(card_alpha_surf, (*color, card_alpha), (0, 0, w, h), border_radius=br)
     surf.blit(card_alpha_surf, (card_rect.x, card_rect.y))
 
     if is_selected:
@@ -717,13 +718,13 @@ def _get_card_scifi(app_name, w, h, gui_scale, is_selected):
     line_inset = max(8, int(16 * gui_scale))
 
     # ── 1. Frosted-glass panel body (semi-transparent) ──
-    glass_alpha = 70 if is_selected else 45
+    glass_alpha = 190 if is_selected else 165
     glass_surf = pygame.Surface((rw, rh), pygame.SRCALPHA)
     pygame.draw.rect(glass_surf, (*_MR_GLASS, glass_alpha), (0, 0, rw, rh), border_radius=br)
     surf.blit(glass_surf, (rx, ry))
 
     # ── 2. Subtle inner edge highlight (frosted glass rim) ──
-    rim_alpha = 20 if is_selected else 12
+    rim_alpha = 25 if is_selected else 15
     rim_surf = pygame.Surface((rw, rh), pygame.SRCALPHA)
     pygame.draw.rect(rim_surf, (*_MR_DIM, rim_alpha), (0, 0, rw, rh), border_radius=br)
     inner_margin = max(3, int(6 * gui_scale))
@@ -976,7 +977,7 @@ def _get_card_ice(app_name, w, h, gui_scale, is_selected):
         (rx, ry + rh - corner_cut),
     ]
     body_surf = pygame.Surface((sw, sh), pygame.SRCALPHA)
-    body_alpha = 140 if is_selected else 100
+    body_alpha = 210 if is_selected else 185
     pygame.draw.polygon(body_surf, (*body_color, body_alpha), body_pts)
     surf.blit(body_surf, (0, 0))
 
