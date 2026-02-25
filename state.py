@@ -68,7 +68,7 @@ class FingerSmoother:
 
 class PinchSmoother:
     """Smooths pinch coordinates for scroll/interaction."""
-    def __init__(self, alpha=0.30):
+    def __init__(self, alpha=0.22):
         self._a = alpha
         self._x = None
         self._y = None
@@ -77,8 +77,15 @@ class PinchSmoother:
         if self._x is None:
             self._x, self._y = x, y
         else:
-            self._x += self._a * (x - self._x)
-            self._y += self._a * (y - self._y)
+            dx = x - self._x
+            dy = y - self._y
+            # Snap to still: if movement is sub-pixel, don't chase it
+            if abs(dx) < 0.5:
+                dx = 0.0
+            if abs(dy) < 0.5:
+                dy = 0.0
+            self._x += self._a * dx
+            self._y += self._a * dy
         return self._x, self._y
 
     def reset(self):

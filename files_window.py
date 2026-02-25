@@ -311,6 +311,9 @@ class FilesWindow:
             self._drag_last_y = py
             return
         dy = self._drag_last_y - py   # drag up => positive offset => scroll down
+        # Hard dead zone: ignore sub-pixel jitter
+        if abs(dy) < 1.5:
+            return
         self._scroll_offset += dy
         self._clamp_scroll(gui_scale)
         self._drag_last_y = py

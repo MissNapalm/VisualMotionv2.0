@@ -14,6 +14,7 @@ Themed with theme_chrome angular HUD styling.
 import math
 import os
 import platform
+import random
 import re
 import signal
 import subprocess
@@ -332,15 +333,12 @@ def _per_core_cpu() -> list[float]:
                         overall = 100.0 - idle
                     except Exception:
                         overall = 0.0
-                    # Simulate per-core spread from overall (macOS top doesn't
+                    # Simulate per-core jitter from overall (macOS top doesn't
                     # give per-core idle; real per-core needs powermetrics / IOKit)
-                    # Use a deterministic spread so bars don't jitter each refresh
                     cores: list[float] = []
                     for i in range(n):
-                        # Fixed offset per core, scaled by overall load
-                        spread = ((i * 7 + 3) % n) / max(n - 1, 1) - 0.5
-                        offset = spread * min(overall, 100.0 - overall) * 0.5
-                        cores.append(max(0.0, min(100.0, overall + offset)))
+                        jitter = random.uniform(-12, 12)
+                        cores.append(max(0.0, min(100.0, overall + jitter)))
                     return cores
     return [0.0] * max(n, 1)
 
@@ -658,7 +656,7 @@ class MonitorWindow:
             self._drag_last_y = py
             return
         dy = self._drag_last_y - py
-        # Dead zone: ignore sub-pixel hand-tracking jitter
+        # Hard dead zone: ignore sub-pixel jitter
         if abs(dy) < 1.5:
             return
         self._scroll_offset += dy

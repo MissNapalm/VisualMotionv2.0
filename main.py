@@ -142,9 +142,14 @@ class App:
                 else:
                     jitter_thresh = 6
                 adx, ady = abs(dx), abs(dy)
-                if adx < jitter_thresh:
+                # Hard floor: zero out truly sub-pixel noise
+                if adx < 0.8:
+                    dx = 0.0
+                elif adx < jitter_thresh:
                     dx *= (adx / jitter_thresh) ** 2
-                if ady < jitter_thresh:
+                if ady < 0.8:
+                    dy = 0.0
+                elif ady < jitter_thresh:
                     dy *= (ady / jitter_thresh) ** 2
 
                 if not st.scroll_unlocked:
