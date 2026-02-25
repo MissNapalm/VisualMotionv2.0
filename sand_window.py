@@ -4821,48 +4821,24 @@ class SandWindow:
         self._rgb_buf[st.grid == EMPTY] = 0
         self._rgb_buf[st.grid == TUNNEL] = 0
 
+        # Blit into pre-allocated small surface, then scale with camera zoom
+        pygame.surfarray.blit_array(self._pixel_surf, self._rgb_buf.transpose(1, 0, 2))
         cz = self._cam_zoom
+        scaled_w = int(self._ww * cz)
+        scaled_h = int(self._wh * cz)
         if cz > 1.01:
-            # OPTIMIZED: only render the visible portion of the grid.
-            # Instead of scaling the full grid to a huge surface, crop the
-            # visible region and scale just that to the window size.
-            gw, gh = self._gw, self._gh
-            # cam_x/cam_y are in window-pixel space; _pixel_surf is 1:1 grid
-            vis_x0 = int(-self._cam_x / cz)
-            vis_y0 = int(-self._cam_y / cz)
-            vis_x1 = vis_x0 + int(self._ww / cz) + 2
-            vis_y1 = vis_y0 + int(self._wh / cz) + 2
-            # Clamp to grid bounds
-            vis_x0 = max(0, vis_x0)
-            vis_y0 = max(0, vis_y0)
-            vis_x1 = min(gw, vis_x1)
-            vis_y1 = min(gh, vis_y1)
-            crop_w = vis_x1 - vis_x0
-            crop_h = vis_y1 - vis_y0
-            if crop_w > 0 and crop_h > 0:
-                # Extract visible slice, transpose for pygame (X,Y,3)
-                crop_rgb = self._rgb_buf[vis_y0:vis_y1, vis_x0:vis_x1].transpose(1, 0, 2)
-                # Create/reuse a small crop surface
-                if not hasattr(self, '_crop_surf') or self._crop_surf.get_width() != crop_w or self._crop_surf.get_height() != crop_h:
-                    self._crop_surf = pygame.Surface((crop_w, crop_h))
-                pygame.surfarray.blit_array(self._crop_surf, crop_rgb)
-                # Scale crop to fill the window
-                pygame.transform.scale(self._crop_surf, (self._ww, self._wh), self._scaled_surf)
-                surface.blit(self._scaled_surf, (0, 0))
-            # cam offsets for sprite drawing: compute from visible rect
-            # Sprites use: sx = (gx * _CELL + _CELL//2) * cam_z + cam_ox
-            # We need gx to map to screen as: (gx - vis_x0) * (ww / crop_w)
-            # So cam_z = ww / (crop_w * _CELL), cam_ox = -vis_x0 * _CELL * cam_z
-            cam_z = self._ww / max(1, crop_w * _CELL)
-            cam_ox = -vis_x0 * _CELL * cam_z
-            cam_oy = -vis_y0 * _CELL * cam_z
+            # Reuse pre-allocated zoomed surface — resize only if needed
+            if self._zoomed_surf.get_width() != scaled_w or self._zoomed_surf.get_height() != scaled_h:
+                self._zoomed_surf = pygame.Surface((scaled_w, scaled_h))
+            pygame.transform.scale(self._pixel_surf, (scaled_w, scaled_h), self._zoomed_surf)
+            surface.blit(self._zoomed_surf, (int(self._cam_x), int(self._cam_y)))
         else:
-            pygame.surfarray.blit_array(self._pixel_surf, self._rgb_buf.transpose(1, 0, 2))
             pygame.transform.scale(self._pixel_surf, (self._ww, self._wh), self._scaled_surf)
             surface.blit(self._scaled_surf, (0, 0))
-            cam_ox = 0.0
-            cam_oy = 0.0
-            cam_z = 1.0
+
+        cam_ox = self._cam_x if cz > 1.01 else 0.0
+        cam_oy = self._cam_y if cz > 1.01 else 0.0
+        cam_z = cz if cz > 1.01 else 1.0
 
         # Draw gnomes as stick figures (or zombie sprite)
         for gnome in self._gnomes:
