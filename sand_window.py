@@ -3125,11 +3125,16 @@ class SandWindow:
         self._flame_particles = []
         self._homing_missiles = []
         self._bomb_font = pygame.font.Font(None, 20)
-        # Load zombie sprite — faces left natively (same as guy1.png)
-        _zpath = os.path.join(os.path.dirname(__file__), "zombie.png")
+        # Load zombie sprite — faces left natively
+        _zpath = os.path.join(os.path.dirname(__file__), "npczombie.png")
         self._zombie_left = pygame.image.load(_zpath).convert_alpha()
         self._zombie_right = pygame.transform.flip(self._zombie_left, True, False)
         self._zombie_cache = {}  # (w, h, dir) → scaled surface
+        # Load gnome/NPC sprite — faces left natively
+        _npath = os.path.join(os.path.dirname(__file__), "npc.png")
+        self._npc_left = pygame.image.load(_npath).convert_alpha()
+        self._npc_right = pygame.transform.flip(self._npc_left, True, False)
+        self._npc_cache = {}  # (w, h, dir) → scaled surface
         self._poison_settle = {}        # (x,y) -> time when poison settled
         self._gnome_spawned_this_pinch = False
         self._fill_done_this_pinch = False
@@ -4618,76 +4623,55 @@ class SandWindow:
                         pygame.draw.circle(surface, (40, 30, 5), (bx, by), max(1, int(1 * z)))
                 continue  # skip stick figure drawing
 
-            # ── Normal gnome: stick figure ──
-            lw = max(2, int(3 * z))  # line width scales with zoom
-            c = gnome.color
-            # If on fire, flicker between orange/red
+            # ── Normal gnome: npc.png sprite ──
+            nph = max(8, int(80 * z))
+            n_aspect = self._npc_left.get_width() / self._npc_left.get_height()
+            npw = max(8, int(nph * n_aspect))
+            foot_sy = sy + int(32 * z)
+            nsx = sx - npw // 2
+            nsy = foot_sy - nph
+            nbase = self._npc_left if gnome.dir == -1 else self._npc_right
+            nkey = (npw, nph, gnome.dir)
+            if nkey not in self._npc_cache:
+                self._npc_cache[nkey] = pygame.transform.smoothscale(nbase, (npw, nph))
+            nsprite = self._npc_cache[nkey]
+            # Fire tint
             if gnome.on_fire:
-                c = random.choice([(255, 80, 0), (255, 0, 0), (255, 180, 0)])
-
-            # Head — bigger
-            pygame.draw.circle(surface, c, (sx, sy - int(20 * z)), max(4, int(10 * z)))
-            # Hat — pointy gnome hat (taller)
-            hat_c = gnome.hat_color if not gnome.on_fire else c
-            pygame.draw.polygon(surface, hat_c, [
-                (sx - int(10 * z), sy - int(28 * z)),      # left brim
-                (sx + int(10 * z), sy - int(28 * z)),      # right brim
-                (sx + int(gnome.dir * 4 * z), sy - int(48 * z)),  # pointy tip
-            ])
-            # Parachute — drawn above gnome when deployed
+                nsprite = nsprite.copy()
+                ntint = pygame.Surface((npw, nph), pygame.SRCALPHA)
+                ntint.fill(random.choice([(255, 80, 0, 140), (255, 0, 0, 140), (255, 180, 0, 140)]))
+                nsprite.blit(ntint, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+            surface.blit(nsprite, (nsx, nsy))
+            # Parachute — drawn above sprite when deployed
             if gnome.parachute_open:
                 chute_c = (240, 240, 240)
                 pw, ph = int(50 * z), int(40 * z)
                 px0 = sx - pw // 2
-                py0 = sy - int(72 * z)
+                py0 = nsy - int(24 * z)
                 pygame.draw.arc(surface, chute_c,
                                 (px0, py0, pw, ph), 0, math.pi, max(2, int(3 * z)))
                 pygame.draw.ellipse(surface, (220, 220, 230),
                                     (px0, py0, pw, ph // 2))
-                pygame.draw.line(surface, chute_c, (sx - int(22 * z), sy - int(60 * z)), (sx - int(6 * z), sy - int(28 * z)), 1)
-                pygame.draw.line(surface, chute_c, (sx + int(22 * z), sy - int(60 * z)), (sx + int(6 * z), sy - int(28 * z)), 1)
-                pygame.draw.line(surface, chute_c, (sx, sy - int(70 * z)), (sx, sy - int(48 * z)), 1)
-            # Held indicator — draw a little hand icon above
+                pygame.draw.line(surface, chute_c, (sx - int(22 * z), py0 + int(12 * z)), (sx - int(6 * z), nsy + int(4 * z)), 1)
+                pygame.draw.line(surface, chute_c, (sx + int(22 * z), py0 + int(12 * z)), (sx + int(6 * z), nsy + int(4 * z)), 1)
+                pygame.draw.line(surface, chute_c, (sx, py0 + int(2 * z)), (sx, nsy), 1)
+            # Held indicator
             if gnome.held:
-                pygame.draw.circle(surface, (220, 180, 120), (sx, sy - int(56 * z)), max(3, int(6 * z)))
-                pygame.draw.line(surface, (220, 180, 120), (sx, sy - int(50 * z)), (sx, sy - int(38 * z)), max(1, int(2 * z)))
-            # Body (longer torso)
-            pygame.draw.line(surface, c, (sx, sy - int(10 * z)), (sx, sy + int(16 * z)), lw)
-            # Arms
-            arm_wave = int(5 * z) if gnome.grounded and gnome.walk_timer == 0 else 0
-            if gnome.on_fire or gnome.bee_stung:
-                arm_wave = int(random.randint(-6, 6) * z)
-            if gnome.celebrating:
-                wave = int(random.randint(-4, 4) * z)
-                pygame.draw.line(surface, c, (sx, sy - int(2 * z)), (sx - int(12 * z), sy - int(18 * z) + wave), lw)
-                pygame.draw.line(surface, c, (sx, sy - int(2 * z)), (sx + int(12 * z), sy - int(18 * z) - wave), lw)
-            elif gnome.parachute_open:
-                pygame.draw.line(surface, c, (sx, sy - int(2 * z)), (sx - int(12 * z), sy - int(18 * z)), lw)
-                pygame.draw.line(surface, c, (sx, sy - int(2 * z)), (sx + int(12 * z), sy - int(18 * z)), lw)
-            else:
-                pygame.draw.line(surface, c, (sx - int(11 * z), sy - int(2 * z) + arm_wave), (sx + int(11 * z), sy - int(2 * z) - arm_wave), lw)
-            # Legs — animate walking (longer legs)
-            if gnome.grounded:
-                leg_off = int(10 * z) if gnome.walk_timer == 0 else int(5 * z)
-                pygame.draw.line(surface, c, (sx, sy + int(16 * z)), (sx - leg_off, sy + int(32 * z)), lw)
-                pygame.draw.line(surface, c, (sx, sy + int(16 * z)), (sx + leg_off, sy + int(32 * z)), lw)
-            else:
-                pygame.draw.line(surface, c, (sx, sy + int(16 * z)), (sx - int(5 * z), sy + int(32 * z)), lw)
-                pygame.draw.line(surface, c, (sx, sy + int(16 * z)), (sx + int(5 * z), sy + int(32 * z)), lw)
-            # Direction indicator — eye dot
-            eye_x = sx + int(5 * gnome.dir * z)
-            pygame.draw.circle(surface, (255, 255, 255), (eye_x, sy - int(22 * z)), max(1, int(2 * z)))
+                pygame.draw.circle(surface, (220, 180, 120), (sx, nsy - int(8 * z)), max(3, int(6 * z)))
+                pygame.draw.line(surface, (220, 180, 120), (sx, nsy - int(2 * z)), (sx, nsy + int(8 * z)), max(1, int(2 * z)))
             # Fire particles around burning gnome
             if gnome.on_fire:
+                ncx = sx
+                ncy = nsy + nph // 2
                 for _ in range(3):
-                    fx = sx + int(random.randint(-10, 10) * z)
-                    fy = sy + int(random.randint(-24, 14) * z)
+                    fx = ncx + int(random.randint(-10, 10) * z)
+                    fy = ncy + int(random.randint(-20, 10) * z)
                     pygame.draw.circle(surface, random.choice(_FIRE_COLORS), (fx, fy), random.randint(2, max(3, int(4 * z))))
             # Bee swarm around stung gnome
             if gnome.bee_stung:
                 for _ in range(5):
                     bx = sx + int(random.randint(-14, 14) * z)
-                    by = sy + int(random.randint(-28, 10) * z)
+                    by = nsy + int(random.randint(0, nph))
                     pygame.draw.circle(surface, (240, 210, 40), (bx, by), max(1, int(2 * z)))
                     pygame.draw.circle(surface, (40, 30, 5), (bx, by), max(1, int(1 * z)))
 
