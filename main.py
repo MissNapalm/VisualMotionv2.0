@@ -18,7 +18,8 @@ from state import (
 )
 from renderer import (clamp, draw_cards, draw_wheel, draw_camera_thumbnail,
                       draw_theme_button, theme_button_hit, toggle_theme, get_bg_color,
-                      draw_helix_graph, is_ice_theme, draw_stars_bg, draw_hex_rain)
+                      draw_helix_graph, is_ice_theme, draw_stars_bg, draw_hex_rain,
+                      draw_hud_overlay)
 from weather_window import WeatherWindow
 from todo_window import TodoWindow
 from sand_window import SandWindow
@@ -359,6 +360,8 @@ class App:
         if not self._any_app_visible:
             if is_ice_theme():
                 draw_helix_graph(screen, WINDOW_WIDTH, WINDOW_HEIGHT)
+            draw_hud_overlay(screen, WINDOW_WIDTH, WINDOW_HEIGHT,
+                             hand_detected=(hand is not None))
             draw_theme_button(screen)
 
         self._resolve_taps(all_rects)

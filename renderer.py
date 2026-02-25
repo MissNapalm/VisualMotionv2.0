@@ -594,6 +594,13 @@ def _get_card_scifi(app_name, w, h, gui_scale, is_selected):
                     math.radians(200), math.radians(340),
                     max(1, int(2 * gui_scale)))
 
+    # ── 4b. Concentric inner arc (double-ring motif) ──
+    arc_r2 = max(6, int(18 * gui_scale))
+    arc_rect2 = pygame.Rect(arc_cx - arc_r2, arc_cy - arc_r2, arc_r2 * 2, arc_r2 * 2)
+    pygame.draw.arc(surf, (*arc_color, 55), arc_rect2,
+                    math.radians(220), math.radians(320),
+                    max(1, int(1 * gui_scale)))
+
     # ── 5. Second arc (bottom-left, mirror) ──
     arc2_r = max(8, int(20 * gui_scale))
     arc2_cx = rx + int(22 * gui_scale)
@@ -633,6 +640,23 @@ def _get_card_scifi(app_name, w, h, gui_scale, is_selected):
     pygame.draw.line(surf, (*_MR_FAINT, 40),
                      (bkt_x - bkt_len, bkt_y2), (bkt_x, bkt_y2), 1)
 
+    # ── 8b. Mini bar-graph readout (right bracket interior) ──
+    bar_count = 5
+    bar_max_w = max(6, int(14 * gui_scale))
+    bar_h_each = max(2, int(3 * gui_scale))
+    bar_gap = max(2, int(4 * gui_scale))
+    bar_block_h = bar_count * (bar_h_each + bar_gap)
+    bar_start_y = (bkt_y1 + bkt_y2) // 2 - bar_block_h // 2
+    bar_x = bkt_x - bkt_len - bar_max_w - int(2 * gui_scale)
+    # Deterministic "data" widths based on app name
+    rng_seed = sum(ord(c) for c in app_name)
+    for bi in range(bar_count):
+        frac = ((rng_seed * (bi + 3) * 7 + 13) % 100) / 100.0
+        bw = max(2, int(bar_max_w * (0.25 + 0.75 * frac)))
+        by = bar_start_y + bi * (bar_h_each + bar_gap)
+        bar_col = (*_MR_BLUE, 55) if is_selected else (*_MR_DIM, 40)
+        pygame.draw.rect(surf, bar_col, (bar_x + bar_max_w - bw, by, bw, bar_h_each))
+
     # ── 9. Bottom divider line (thinner, separates status area) ──
     bot_div_y = ry + rh - int(24 * gui_scale)
     pygame.draw.line(surf, (*_MR_FAINT, 60),
@@ -648,6 +672,31 @@ def _get_card_scifi(app_name, w, h, gui_scale, is_selected):
                    (rx + rw - dot_inset, ry + rh - dot_inset)]:
         pygame.draw.circle(surf, dot_col, (dx, dy), dot_r)
 
+    # ── 10b. Corner bracket motifs (L-shaped accents at each corner) ──
+    cb_len = max(6, int(14 * gui_scale))
+    cb_inset = max(4, int(7 * gui_scale))
+    cb_col = _MR_BLUE if is_selected else (*_MR_DIM, 80)
+    # top-left
+    pygame.draw.line(surf, cb_col, (rx + cb_inset, ry + cb_inset),
+                     (rx + cb_inset + cb_len, ry + cb_inset), 1)
+    pygame.draw.line(surf, cb_col, (rx + cb_inset, ry + cb_inset),
+                     (rx + cb_inset, ry + cb_inset + cb_len), 1)
+    # top-right
+    pygame.draw.line(surf, cb_col, (rx + rw - cb_inset, ry + cb_inset),
+                     (rx + rw - cb_inset - cb_len, ry + cb_inset), 1)
+    pygame.draw.line(surf, cb_col, (rx + rw - cb_inset, ry + cb_inset),
+                     (rx + rw - cb_inset, ry + cb_inset + cb_len), 1)
+    # bottom-left
+    pygame.draw.line(surf, cb_col, (rx + cb_inset, ry + rh - cb_inset),
+                     (rx + cb_inset + cb_len, ry + rh - cb_inset), 1)
+    pygame.draw.line(surf, cb_col, (rx + cb_inset, ry + rh - cb_inset),
+                     (rx + cb_inset, ry + rh - cb_inset - cb_len), 1)
+    # bottom-right
+    pygame.draw.line(surf, cb_col, (rx + rw - cb_inset, ry + rh - cb_inset),
+                     (rx + rw - cb_inset - cb_len, ry + rh - cb_inset), 1)
+    pygame.draw.line(surf, cb_col, (rx + rw - cb_inset, ry + rh - cb_inset),
+                     (rx + rw - cb_inset, ry + rh - cb_inset - cb_len), 1)
+
     # ── 11. App name in title zone ──
     title_size = max(10, int(22 * gui_scale))
     title_color = _MR_WHITE if is_selected else _MR_BLUE
@@ -655,17 +704,56 @@ def _get_card_scifi(app_name, w, h, gui_scale, is_selected):
     surf.blit(title_img, (rx + line_inset,
                           ry + int(rh * 0.13) - title_img.get_height() // 2))
 
-    # ── 12. Large icon letter centred in body ──
+    # ── 11b. Thin signal-strength dots after title ──
+    sig_x = rx + line_inset + title_img.get_width() + int(8 * gui_scale)
+    sig_y = ry + int(rh * 0.13)
+    sig_dot_r = max(1, int(2 * gui_scale))
+    sig_gap = max(3, int(5 * gui_scale))
+    sig_count = 3
+    sig_filled = ((rng_seed * 3 + 7) % sig_count) + 1  # 1..3 dots "filled"
+    for si in range(sig_count):
+        sc = (*_MR_BLUE, 110) if si < sig_filled else (*_MR_FAINT, 40)
+        pygame.draw.circle(surf, sc, (sig_x + si * sig_gap, sig_y), sig_dot_r)
+
+    # ── 12. Glow ring behind icon letter ──
+    body_center_y = div_y + (ry + rh - div_y) // 2
+    icon_center_y = body_center_y - int(12 * gui_scale)
+    glow_ring_r = max(20, int(46 * gui_scale))
+    glow_ring_col = (*_MR_BLUE, 28) if is_selected else (*_MR_DIM, 18)
+    pygame.draw.circle(surf, glow_ring_col, (cx, icon_center_y), glow_ring_r, max(1, int(2 * gui_scale)))
+    # Inner halo (softer, filled)
+    halo_r = max(14, int(32 * gui_scale))
+    halo_col = (*_MR_GLASS, 50) if is_selected else (*_MR_GLASS, 30)
+    pygame.draw.circle(surf, halo_col, (cx, icon_center_y), halo_r)
+
+    # Large icon letter centred in body
     icon_size = max(24, int(100 * gui_scale))
     icon_color = _MR_WHITE if is_selected else (*_MR_BLUE[:3],)
     icon_img = _render_text(app_name[0], icon_size, icon_color)
-    body_center_y = div_y + (ry + rh - div_y) // 2
-    surf.blit(icon_img, icon_img.get_rect(center=(cx, body_center_y - int(12 * gui_scale))))
+    surf.blit(icon_img, icon_img.get_rect(center=(cx, icon_center_y)))
 
     # ── 13. Sub-label below icon ──
     sub_size = max(10, int(24 * gui_scale))
     sub_img = _render_text(app_name, sub_size, _MR_DIM)
     surf.blit(sub_img, sub_img.get_rect(center=(cx, body_center_y + int(36 * gui_scale))))
+
+    # ── 13b. Faint waveform line below sub-label (signal motif) ──
+    wave_y = body_center_y + int(52 * gui_scale)
+    wave_x0 = rx + line_inset + int(10 * gui_scale)
+    wave_x1 = rx + rw - line_inset - int(10 * gui_scale)
+    wave_pts = []
+    wave_steps = max(10, (wave_x1 - wave_x0) // 3)
+    for wi in range(wave_steps):
+        t = wi / max(1, wave_steps - 1)
+        wx = wave_x0 + int(t * (wave_x1 - wave_x0))
+        # Deterministic waveform from app name hash
+        phase = rng_seed * 0.7 + wi * 0.9
+        amp = max(2, int(6 * gui_scale))
+        wy = wave_y + int(math.sin(phase) * amp * (0.3 + 0.7 * math.sin(wi * 0.4 + rng_seed)))
+        wave_pts.append((wx, wy))
+    wave_col = (*_MR_DIM, 45) if not is_selected else (*_MR_BLUE, 60)
+    if len(wave_pts) > 1:
+        pygame.draw.lines(surf, wave_col, False, wave_pts, 1)
 
     # ── 14. Status readout text bottom-left ──
     stat_size = max(8, int(12 * gui_scale))
@@ -675,10 +763,22 @@ def _get_card_scifi(app_name, w, h, gui_scale, is_selected):
     stat_y = ry + rh - stat_img.get_height() - int(6 * gui_scale)
     surf.blit(stat_img, (stat_x, stat_y))
 
+    # ── 14b. Tiny blinking-style status dot next to status text ──
+    status_dot_x = stat_x + stat_img.get_width() + int(5 * gui_scale)
+    status_dot_y = stat_y + stat_img.get_height() // 2
+    status_dot_col = (*_MR_BLUE, 110) if is_selected else (*_MR_DIM, 70)
+    pygame.draw.circle(surf, status_dot_col, (status_dot_x, status_dot_y), max(1, int(2 * gui_scale)))
+
     # ── 15. Small "ID" tag bottom-right ──
     id_text = f"ID:{ord(app_name[0]):03X}"
     id_img = _render_text(id_text, stat_size, (*_MR_FAINT[:3],))
     surf.blit(id_img, (rx + rw - id_img.get_width() - line_inset, stat_y))
+
+    # ── 15b. Hex data readout above ID (fake telemetry) ──
+    hex_data = f"{(rng_seed * 2731 + 12345) & 0xFFFF:04X}.{(rng_seed * 997) & 0xFF:02X}"
+    hex_img = _render_text(hex_data, max(8, int(11 * gui_scale)), (*_MR_FAINT[:3],))
+    surf.blit(hex_img, (rx + rw - hex_img.get_width() - line_inset,
+                        stat_y - hex_img.get_height() - int(2 * gui_scale)))
 
     # ── 16. Thin rounded border ──
     border_color = _MR_BLUE if is_selected else _MR_DIM
@@ -1026,6 +1126,192 @@ def draw_skeleton_thumbnail(surface, landmarks, x=None, y=None,
             pygame.draw.circle(surface, _PALM_COLOR, (px, py), 4)
         else:
             pygame.draw.circle(surface, _FINGER_COLOR, (px, py), 2)
+# ==============================
+# HUD overlay — system data readouts (sci-fi theme only)
+# ==============================
+import platform as _platform
+import datetime as _datetime
+
+_hud_frame_times: list = []  # rolling FPS buffer
+_hud_sys_info: dict | None = None
+
+
+def _get_sys_info():
+    """Cache system info strings (expensive calls, only do once)."""
+    global _hud_sys_info
+    if _hud_sys_info is not None:
+        return _hud_sys_info
+    _hud_sys_info = {
+        "os": _platform.system().upper(),
+        "arch": _platform.machine().upper(),
+        "node": _platform.node().upper()[:16],
+        "py": _platform.python_version(),
+    }
+    return _hud_sys_info
+
+
+def draw_hud_overlay(surface, win_w, win_h, hand_detected=False, fps_clock=None):
+    """Draw Minority-Report-style system HUD data around the screen edges.
+    Only active on sci-fi theme. Designed to frame the cards without overlapping."""
+    if _theme_id != _THEME_SCIFI:
+        return
+
+    now = _time.time()
+
+    # ── FPS calculation ──
+    _hud_frame_times.append(now)
+    # Keep last 60 timestamps
+    while len(_hud_frame_times) > 60:
+        _hud_frame_times.pop(0)
+    if len(_hud_frame_times) > 2:
+        elapsed = _hud_frame_times[-1] - _hud_frame_times[0]
+        fps = (len(_hud_frame_times) - 1) / max(0.001, elapsed)
+    else:
+        fps = 60.0
+
+    sys_info = _get_sys_info()
+
+    # ── Bottom-left: System readout panel ──
+    bl_x, bl_y = 12, win_h - 130
+    # Semi-transparent backing
+    bl_panel = pygame.Surface((210, 118), pygame.SRCALPHA)
+    pygame.draw.rect(bl_panel, (*_MR_GLASS, 55), (0, 0, 210, 118), border_radius=6)
+    pygame.draw.rect(bl_panel, (*_MR_DIM, 40), (0, 0, 210, 118), width=1, border_radius=6)
+    surface.blit(bl_panel, (bl_x, bl_y))
+
+    # Header
+    hdr = _render_text("SYS TELEMETRY", max(10, 13), _MR_DIM)
+    surface.blit(hdr, (bl_x + 8, bl_y + 4))
+    pygame.draw.line(surface, (*_MR_DIM, 60), (bl_x + 8, bl_y + 20), (bl_x + 200, bl_y + 20), 1)
+
+    # Data rows
+    rows = [
+        f"OS     {sys_info['os']} {sys_info['arch']}",
+        f"NODE   {sys_info['node']}",
+        f"PYRT   {sys_info['py']}",
+        f"FPS    {fps:5.1f}",
+        f"RENDER PYGAME/SDL2",
+    ]
+    for i, txt in enumerate(rows):
+        y = bl_y + 26 + i * 16
+        col = _MR_BLUE if i == 3 else (*_MR_FAINT[:3],)
+        img = _render_text(txt, max(9, 12), col)
+        surface.blit(img, (bl_x + 10, y))
+
+    # Live status dot
+    dot_pulse = int(80 + 40 * math.sin(now * 3.0))
+    pygame.draw.circle(surface, (*_MR_BLUE[:3], dot_pulse), (bl_x + 198, bl_y + 12), 3)
+
+    # ── Bottom-right: Gesture status panel ──
+    br_w, br_h = 190, 80
+    br_x = win_w - br_w - 12
+    br_y = win_h - br_h - 12
+    br_panel = pygame.Surface((br_w, br_h), pygame.SRCALPHA)
+    pygame.draw.rect(br_panel, (*_MR_GLASS, 55), (0, 0, br_w, br_h), border_radius=6)
+    pygame.draw.rect(br_panel, (*_MR_DIM, 40), (0, 0, br_w, br_h), width=1, border_radius=6)
+    surface.blit(br_panel, (br_x, br_y))
+
+    ghdr = _render_text("GESTURE ENGINE", max(10, 13), _MR_DIM)
+    surface.blit(ghdr, (br_x + 8, br_y + 4))
+    pygame.draw.line(surface, (*_MR_DIM, 60), (br_x + 8, br_y + 20), (br_x + br_w - 10, br_y + 20), 1)
+
+    tracking_text = "TRACKING" if hand_detected else "STANDBY"
+    tracking_col = (100, 220, 160) if hand_detected else _MR_FAINT
+    t_img = _render_text(f"STATUS  {tracking_text}", max(9, 12), tracking_col)
+    surface.blit(t_img, (br_x + 10, br_y + 28))
+
+    mode_img = _render_text("MODE    CAROUSEL", max(9, 12), (*_MR_FAINT[:3],))
+    surface.blit(mode_img, (br_x + 10, br_y + 44))
+
+    latency_ms = 1000.0 / max(1, fps)
+    lat_img = _render_text(f"LATENCY {latency_ms:5.1f}ms", max(9, 12), (*_MR_FAINT[:3],))
+    surface.blit(lat_img, (br_x + 10, br_y + 60))
+
+    # Status dot
+    if hand_detected:
+        pygame.draw.circle(surface, (100, 220, 160, 160), (br_x + br_w - 12, br_y + 12), 3)
+    else:
+        blink = 120 if int(now * 2) % 2 == 0 else 40
+        pygame.draw.circle(surface, (*_MR_DIM[:3], blink), (br_x + br_w - 12, br_y + 12), 3)
+
+    # ── Top-center: Clock + date readout ──
+    dt_now = _datetime.datetime.now()
+    time_str = dt_now.strftime("%H:%M:%S")
+    date_str = dt_now.strftime("%Y.%m.%d")
+
+    time_img = _render_text(time_str, max(14, 20), _MR_WHITE)
+    date_img = _render_text(date_str, max(10, 14), _MR_DIM)
+    total_w = time_img.get_width() + 12 + date_img.get_width()
+
+    # Don't overlap the camera thumbnail (top-right) or theme button (top-left)
+    tc_x = win_w // 2 - total_w // 2
+    tc_y = 10
+    # Small backing strip
+    strip_w = total_w + 24
+    strip_h = max(time_img.get_height(), date_img.get_height()) + 8
+    strip_surf = pygame.Surface((strip_w, strip_h), pygame.SRCALPHA)
+    pygame.draw.rect(strip_surf, (*_MR_GLASS, 40), (0, 0, strip_w, strip_h), border_radius=4)
+    surface.blit(strip_surf, (tc_x - 12, tc_y - 4))
+
+    surface.blit(time_img, (tc_x, tc_y))
+    surface.blit(date_img, (tc_x + time_img.get_width() + 12,
+                            tc_y + time_img.get_height() - date_img.get_height()))
+
+    # Thin decorative lines flanking the clock
+    flank_y = tc_y + strip_h // 2
+    flank_len = 40
+    pygame.draw.line(surface, (*_MR_DIM, 50),
+                     (tc_x - 18, flank_y), (tc_x - 18 - flank_len, flank_y), 1)
+    pygame.draw.line(surface, (*_MR_DIM, 50),
+                     (tc_x + total_w + 6, flank_y),
+                     (tc_x + total_w + 6 + flank_len, flank_y), 1)
+    # Tiny end dots
+    pygame.draw.circle(surface, (*_MR_DIM, 60), (tc_x - 18 - flank_len, flank_y), 2)
+    pygame.draw.circle(surface, (*_MR_DIM, 60), (tc_x + total_w + 6 + flank_len, flank_y), 2)
+
+    # ── Left edge: Vertical data stream (scrolling hex/binary snippets) ──
+    stream_x = 14
+    stream_y0 = 50
+    stream_y1 = win_h - 150
+    stream_count = 12
+    stream_spacing = (stream_y1 - stream_y0) // max(1, stream_count)
+    for si in range(stream_count):
+        # Each line scrolls: offset by time so they change
+        offset = int(now * 0.5 + si * 1.7) % 99999
+        hex_val = f"{(offset * 48271 + si * 1013) & 0xFFFFFF:06X}"
+        sy = stream_y0 + si * stream_spacing
+        s_img = _render_text(hex_val, max(8, 10), (*_MR_FAINT[:3],))
+        surface.blit(s_img, (stream_x, sy))
+
+    # Thin vertical guide line next to the stream
+    pygame.draw.line(surface, (*_MR_FAINT, 30),
+                     (stream_x + 48, stream_y0 - 4),
+                     (stream_x + 48, stream_y1 + 12), 1)
+
+    # ── Right edge: Animated signal bars ──
+    sig_x = win_w - 30
+    sig_y0 = 180
+    sig_bar_count = 16
+    sig_bar_h = 2
+    sig_bar_gap = 8
+    sig_bar_max_w = 18
+    for si in range(sig_bar_count):
+        sy = sig_y0 + si * (sig_bar_h + sig_bar_gap)
+        # Animated width based on time + position
+        phase = now * 1.5 + si * 0.6
+        frac = 0.3 + 0.7 * (0.5 + 0.5 * math.sin(phase))
+        bw = int(sig_bar_max_w * frac)
+        bar_alpha = int(30 + 25 * frac)
+        pygame.draw.rect(surface, (*_MR_DIM[:3], bar_alpha),
+                         (sig_x - bw, sy, bw, sig_bar_h))
+
+    # ── Bottom-center: Category indicator label ──
+    cat_label = _render_text("▸ CAROUSEL INTERFACE ACTIVE", max(9, 12), (*_MR_DIM[:3],))
+    cat_x = win_w // 2 - cat_label.get_width() // 2
+    cat_y = win_h - 18
+    surface.blit(cat_label, (cat_x, cat_y))
+
+
 # ==============================
 # Camera thumbnail (privacy — skeleton only, no video feed)
 # ==============================
