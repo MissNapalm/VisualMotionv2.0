@@ -44,6 +44,9 @@ TUNNEL = 20
 GLASS = 21
 BEEHIVE = 22
 FLOWER = 23
+TREESEED = 24
+GRASS = 25
+GRASSSEED = 26
 
 _WOOD_COLOR = (139, 90, 43)
 _WOOD_COLORS = [(139, 90, 43), (120, 75, 35), (160, 105, 50), (110, 70, 30)]
@@ -68,6 +71,10 @@ _BEEHIVE_COLORS = [(180, 140, 40), (160, 120, 30), (200, 155, 50), (140, 110, 25
 _BEE_COLOR = (240, 210, 40)
 _FLOWER_COLORS = [(255, 80, 120), (255, 200, 50), (200, 100, 255), (255, 140, 60), (255, 255, 100),
                   (255, 120, 180), (180, 80, 220)]
+_TREESEED_COLORS = [(80, 55, 15), (65, 45, 10), (95, 65, 20), (55, 38, 8), (90, 60, 18)]
+_GRASS_COLORS = [(40, 160, 30), (30, 140, 20), (50, 180, 40), (35, 150, 25), (60, 170, 45),
+                 (45, 155, 35), (55, 165, 50)]
+_GRASSSEED_COLORS = [(70, 90, 20), (55, 75, 15), (85, 100, 25), (50, 70, 12), (80, 95, 22)]
 
 _FUN_COLORS = [
     (255, 69, 0), (255, 105, 180), (255, 255, 0),
@@ -139,7 +146,7 @@ class _Gnome:
     def _can_walk(self, ix, iy, direction, grid):
         """Check if we can walk one step in the given direction.
         Returns (new_gx, new_gy) or None."""
-        _passable = (EMPTY, FIRE, NAPALM, WATER, POISON, HOLYWATER, MONEY)
+        _passable = (EMPTY, FIRE, NAPALM, WATER, POISON, HOLYWATER, MONEY, GRASS)
         h, w = grid.shape
         next_x = ix + direction
         if next_x < 0 or next_x >= w:
@@ -707,7 +714,7 @@ class _Missile:
             self.alive = False
             return
         cell = grid[iy, ix]
-        _passable_missile = (EMPTY, FIRE, NAPALM, TUNNEL, WATER, POISON, HOLYWATER)
+        _passable_missile = (EMPTY, FIRE, NAPALM, TUNNEL, WATER, POISON, HOLYWATER, GRASS)
         if cell not in _passable_missile:
             # Hit something solid — explode
             self.exploded = True
@@ -754,7 +761,7 @@ class _FlameParticle:
             return
         cell = grid[iy, ix]
         # If we hit something burnable — set it on fire
-        if cell in (WOOD, PLANT, DIRT, HEAVY):
+        if cell in (WOOD, PLANT, DIRT, HEAVY, GRASS):
             grid[iy, ix] = FIRE
             colors[iy, ix] = random.choice(_FIRE_COLORS)
             self.alive = False
@@ -844,7 +851,7 @@ class _HomingMissile:
             self.exploded = True
             return
         cell = grid[iy, ix]
-        _passable = (EMPTY, FIRE, NAPALM, TUNNEL, WATER, POISON, HOLYWATER)
+        _passable = (EMPTY, FIRE, NAPALM, TUNNEL, WATER, POISON, HOLYWATER, GRASS)
         if cell not in _passable:
             self.exploded = True
             self.alive = False
@@ -1462,7 +1469,7 @@ def _explode_bomb(state, bx, by, gnomes, gibs, sparks, is_fire=False, radius=Non
                 nx, ny = cx + dx, cy + dy
                 if 0 <= nx < w and 0 <= ny < h:
                     cell = g[ny, nx]
-                    if cell in (WOOD, PLANT, DIRT, HEAVY, STATIC):
+                    if cell in (WOOD, PLANT, DIRT, HEAVY, STATIC, GRASS):
                         if random.random() < 0.5:
                             g[ny, nx] = FIRE
                             c[ny, nx] = random.choice(_FIRE_COLORS)
@@ -1525,7 +1532,7 @@ _HOOK_SPEED = 2.34         # projectile travel speed (grid cells/tick) — no gr
 _HOOK_PULL_ACCEL = 0.3     # how fast the rope pulls the player
 _HOOK_MAX_PULL_VEL = 1.2   # max speed while being pulled — slower than hook shoot speed
 _HOOK_ROPE_LEN_MIN = 1.5   # stop pulling when this close (arrive)
-_PLAYER_CAMERA_ZOOM = 0.9   # how much the view zooms in when player is active
+_PLAYER_CAMERA_ZOOM = 1.5   # how much the view zooms in when player is active
 
 
 class _Player:
@@ -1641,7 +1648,7 @@ class _Player:
             grav *= 2.5  # fast-fall when holding S
         self.vy = min(self.vy + grav, _PLAYER_TERMINAL_VEL)
 
-        _passable = (EMPTY, FIRE, NAPALM, WATER, POISON, HOLYWATER, TUNNEL)
+        _passable = (EMPTY, FIRE, NAPALM, WATER, POISON, HOLYWATER, TUNNEL, GRASS)
 
         def _solid(cy, cx):
             return (0 <= cx < w and 0 <= cy < h and
@@ -2119,9 +2126,9 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False, splash_dr
     c = state.colors
     h, w = g.shape
 
-    # Find all falling particles: sand, gasoline, water, confetti, poison, holy water, money, dirt, seed
+    # Find all falling particles: sand, gasoline, water, confetti, poison, holy water, money, dirt, seed, treeseed, grassseed
     # (GUNPOWDER is static — painted like a fuse line, does not fall)
-    falling = (g == HEAVY) | (g == GASOLINE) | (g == WATER) | (g == CONFETTI) | (g == POISON) | (g == HOLYWATER) | (g == MONEY) | (g == DIRT) | (g == SEED)
+    falling = (g == HEAVY) | (g == GASOLINE) | (g == WATER) | (g == CONFETTI) | (g == POISON) | (g == HOLYWATER) | (g == MONEY) | (g == DIRT) | (g == SEED) | (g == TREESEED) | (g == GRASSSEED)
     if not np.any(falling):
         return
 
@@ -2141,7 +2148,7 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False, splash_dr
     for i in range(len(ys)):
         y, x = int(ys[i]), int(xs[i])
         ptype = g[y, x]
-        if ptype not in (HEAVY, GASOLINE, WATER, CONFETTI, POISON, HOLYWATER, MONEY, DIRT, SEED):
+        if ptype not in (HEAVY, GASOLINE, WATER, CONFETTI, POISON, HOLYWATER, MONEY, DIRT, SEED, TREESEED, GRASSSEED):
             continue  # already moved by another particle this step
         col = c[y, x].copy()
 
@@ -2315,34 +2322,220 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False, splash_dr
                     'remaining': length,
                 })
 
-    # ── Vine growth (gradual) ──────────────────────────────────
+    # ── Vine / tree growth (gradual) ─────────────────────────────
     # Each vine tip extends by 1 cell every ~12 ticks (slow growth).
+    # Tree trunk tips place WOOD going up; when done they spawn canopy tips.
+    # Canopy tips place PLANT in a spread pattern.
     if vine_tips is not None:
         still_growing = []
+        new_tips = []  # tips spawned by finishing trunk tips
         for tip in vine_tips:
             if random.random() < 0.919:
                 # Skip this tick — slows growth to ~1 cell per 12 ticks
                 still_growing.append(tip)
                 continue
-            tip['x'] += tip['dx'] + random.uniform(-0.3, 0.3)
-            tip['y'] += tip['dy'] + random.uniform(-0.3, 0.3)
-            tip['remaining'] -= 1
-            vix = int(round(tip['x']))
-            viy = int(round(tip['y']))
-            if vix < 0 or vix >= w or viy < 0 or viy >= h:
-                continue  # out of bounds — die
-            cell = g[viy, vix]
-            if cell == EMPTY or cell in _water_set:
-                g[viy, vix] = PLANT
-                c[viy, vix] = random.choice(_PLANT_COLORS)
-            elif cell == PLANT:
-                pass  # already plant, keep going through
+            tip_type = tip.get('type', 'vine')
+            if tip_type == 'trunk':
+                # Tree trunk — grow straight up, place WOOD
+                tip['x'] += tip['dx']
+                tip['y'] += tip['dy']
+                tip['remaining'] -= 1
+                vix = int(round(tip['x']))
+                viy = int(round(tip['y']))
+                if vix < 0 or vix >= w or viy < 0 or viy >= h:
+                    continue
+                cell = g[viy, vix]
+                if cell in (EMPTY, WATER, HOLYWATER, GRASS):
+                    g[viy, vix] = WOOD
+                    c[viy, vix] = random.choice(_WOOD_COLORS)
+                elif cell == WOOD:
+                    pass  # already wood, keep growing through
+                else:
+                    continue  # hit solid — stop
+                # Spawn branches at intervals (not at very bottom or very top)
+                tip['steps_since_branch'] = tip.get('steps_since_branch', 0) + 1
+                branch_interval = tip.get('branch_interval', 5)
+                if tip['steps_since_branch'] >= branch_interval and tip['remaining'] > 4:
+                    tip['steps_since_branch'] = 0
+                    # Spawn 1-2 branches going left and/or right
+                    side = random.choice([-1, 1, 0])  # 0 = both sides
+                    if side == 0:
+                        sides = [-1, 1]
+                    else:
+                        sides = [side]
+                    for s in sides:
+                        branch_len = random.randint(4, 10)
+                        new_tips.append({
+                            'x': float(vix), 'y': float(viy),
+                            'dx': float(s) * random.uniform(0.7, 1.0),
+                            'dy': random.uniform(-0.5, -0.15),  # branches angle slightly up
+                            'remaining': branch_len,
+                            'type': 'branch',
+                        })
+                if tip['remaining'] > 0:
+                    still_growing.append(tip)
+                else:
+                    # Trunk finished — spawn canopy tips from the top
+                    top_x = tip.get('trunk_top_x', vix)
+                    top_y = tip.get('trunk_top_y', viy)
+                    num_canopy = random.randint(14, 20)
+                    for _ in range(num_canopy):
+                        angle = random.uniform(0, 2 * math.pi)
+                        length = random.randint(6, 14)
+                        new_tips.append({
+                            'x': float(top_x), 'y': float(top_y),
+                            'dx': math.cos(angle) * 0.9,
+                            'dy': math.sin(angle) * 0.6 - 0.3,  # bias upward
+                            'remaining': length,
+                            'type': 'canopy',
+                        })
+            elif tip_type == 'branch':
+                # Branch — grows sideways placing WOOD, spawns leaf cluster at end
+                tip['x'] += tip['dx'] + random.uniform(-0.1, 0.1)
+                tip['y'] += tip['dy'] + random.uniform(-0.15, 0.1)
+                tip['remaining'] -= 1
+                vix = int(round(tip['x']))
+                viy = int(round(tip['y']))
+                if vix < 0 or vix >= w or viy < 0 or viy >= h:
+                    continue
+                cell = g[viy, vix]
+                if cell in (EMPTY, WATER, HOLYWATER, GRASS):
+                    g[viy, vix] = WOOD
+                    c[viy, vix] = random.choice(_WOOD_COLORS)
+                elif cell in (WOOD, PLANT):
+                    pass  # grow through existing tree parts
+                else:
+                    continue
+                if tip['remaining'] > 0:
+                    still_growing.append(tip)
+                else:
+                    # Branch end — spawn small leaf cluster
+                    num_leaves = random.randint(4, 8)
+                    for _ in range(num_leaves):
+                        angle = random.uniform(0, 2 * math.pi)
+                        length = random.randint(3, 7)
+                        new_tips.append({
+                            'x': float(vix), 'y': float(viy),
+                            'dx': math.cos(angle) * 0.7,
+                            'dy': math.sin(angle) * 0.5 - 0.2,
+                            'remaining': length,
+                            'type': 'canopy',
+                        })
+            elif tip_type == 'canopy':
+                # Canopy — place PLANT leaves, spread outward
+                tip['x'] += tip['dx'] + random.uniform(-0.3, 0.3)
+                tip['y'] += tip['dy'] + random.uniform(-0.3, 0.3)
+                tip['remaining'] -= 1
+                vix = int(round(tip['x']))
+                viy = int(round(tip['y']))
+                if vix < 0 or vix >= w or viy < 0 or viy >= h:
+                    continue
+                cell = g[viy, vix]
+                if cell in (EMPTY, WATER, HOLYWATER, GRASS):
+                    g[viy, vix] = PLANT
+                    c[viy, vix] = random.choice(_PLANT_COLORS)
+                elif cell in (PLANT, WOOD):
+                    pass  # keep going through
+                else:
+                    continue
+                if tip['remaining'] > 0:
+                    still_growing.append(tip)
             else:
-                continue  # hit solid — die
-            if tip['remaining'] > 0:
-                still_growing.append(tip)
+                # Regular vine tip — place PLANT
+                tip['x'] += tip['dx'] + random.uniform(-0.3, 0.3)
+                tip['y'] += tip['dy'] + random.uniform(-0.3, 0.3)
+                tip['remaining'] -= 1
+                vix = int(round(tip['x']))
+                viy = int(round(tip['y']))
+                if vix < 0 or vix >= w or viy < 0 or viy >= h:
+                    continue  # out of bounds — die
+                cell = g[viy, vix]
+                if cell == EMPTY or cell in _water_set:
+                    g[viy, vix] = PLANT
+                    c[viy, vix] = random.choice(_PLANT_COLORS)
+                elif cell == PLANT:
+                    pass  # already plant, keep going through
+                else:
+                    continue  # hit solid — die
+                if tip['remaining'] > 0:
+                    still_growing.append(tip)
         vine_tips.clear()
         vine_tips.extend(still_growing)
+        vine_tips.extend(new_tips)
+
+    # ── Tree seed sprouting ──────────────────────────────────────
+    # TREESEED touching water starts growing a tree gradually using vine_tips.
+    # Trunk tips grow straight up (WOOD), then spawn canopy tips (PLANT).
+    ts_ys, ts_xs = np.where(g == TREESEED)
+    for ti in range(len(ts_ys)):
+        ty, tx = int(ts_ys[ti]), int(ts_xs[ti])
+        if g[ty, tx] != TREESEED:
+            continue
+        # Check all 8 neighbors for water
+        touching_water = False
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                if dy == 0 and dx == 0:
+                    continue
+                ny2, nx2 = ty + dy, tx + dx
+                if 0 <= ny2 < h and 0 <= nx2 < w and g[ny2, nx2] in _water_set:
+                    touching_water = True
+                    break
+            if touching_water:
+                break
+        if not touching_water:
+            continue
+        # Sprout! Convert seed to wood (root) and spawn trunk tips
+        g[ty, tx] = WOOD
+        c[ty, tx] = random.choice(_WOOD_COLORS)
+        if vine_tips is not None:
+            trunk_height = random.randint(20, 36)
+            trunk_width = random.randint(1, 3)
+            # Trunk tips — grow straight up, placing WOOD
+            for dxx in range(-trunk_width + 1, trunk_width):
+                vine_tips.append({
+                    'x': float(tx + dxx), 'y': float(ty),
+                    'dx': 0.0, 'dy': -1.0,
+                    'remaining': trunk_height,
+                    'type': 'trunk',
+                    'trunk_top_x': tx,
+                    'trunk_top_y': ty - trunk_height,
+                    'branch_interval': random.randint(4, 7),  # spawn branch every N cells
+                    'steps_since_branch': 0,
+                })
+
+    # ── Grass seed sprouting ───────────────────────────────────────
+    # GRASSSEED touching water sprouts very short grass (1-3 cells upward)
+    gs_ys, gs_xs = np.where(g == GRASSSEED)
+    for gi in range(len(gs_ys)):
+        gy2, gx2 = int(gs_ys[gi]), int(gs_xs[gi])
+        if g[gy2, gx2] != GRASSSEED:
+            continue
+        # Check all 8 neighbors for water
+        touching_water = False
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                if dy == 0 and dx == 0:
+                    continue
+                ny2, nx2 = gy2 + dy, gx2 + dx
+                if 0 <= ny2 < h and 0 <= nx2 < w and g[ny2, nx2] in _water_set:
+                    touching_water = True
+                    break
+            if touching_water:
+                break
+        if not touching_water:
+            continue
+        # Sprout! Convert seed to grass and grow 1-3 cells upward
+        g[gy2, gx2] = GRASS
+        c[gy2, gx2] = random.choice(_GRASS_COLORS)
+        blade_height = random.randint(1, 3)
+        for dy in range(1, blade_height + 1):
+            gsy = gy2 - dy
+            if 0 <= gsy < h and g[gsy, gx2] in (EMPTY, WATER, HOLYWATER):
+                g[gsy, gx2] = GRASS
+                c[gsy, gx2] = random.choice(_GRASS_COLORS)
+            else:
+                break  # hit something solid, stop growing
 
     # ── Fluid leveling pass ─────────────────────────────────────
     # Run several passes bottom-to-top.  For each fluid cell that
@@ -2490,6 +2683,10 @@ def _step_fire(state):
                     if random.random() < 0.15:       # plants burn aggressively
                         g[ny2, nx] = FIRE
                         c[ny2, nx] = random.choice(_FIRE_COLORS)
+                elif cell == GRASS:
+                    if random.random() < 0.20:       # grass burns very easily
+                        g[ny2, nx] = FIRE
+                        c[ny2, nx] = random.choice(_FIRE_COLORS)
                 elif cell == DIRT:
                     if random.random() < 0.07:       # dirt ignites easily
                         g[ny2, nx] = FIRE
@@ -2522,7 +2719,7 @@ def _step_fire(state):
         moved = False
 
         # Check if fuel is directly above — anchor the fire
-        fuel_above = (0 <= ny < h and g[ny, x] in (WOOD, DIRT))
+        fuel_above = (0 <= ny < h and g[ny, x] in (WOOD, DIRT, GRASS))
 
         if not fuel_above and 0 <= ny < h and g[ny, x] == EMPTY:
             fa[ny, x] = fa[y, x]
@@ -2571,7 +2768,7 @@ def _step_fire(state):
             nx2, ny2 = x + dx2, y + dy2
             if 0 <= nx2 < w and 0 <= ny2 < h:
                 nc = g[ny2, nx2]
-                if nc == PLANT:
+                if nc in (PLANT, GRASS):
                     near_plant = True
                     break
                 elif nc in (WOOD, DIRT):
@@ -3092,6 +3289,8 @@ class SandWindow:
     MODE_WORM = 24
     MODE_GLASS = 25
     MODE_BEE = 26
+    MODE_TREE = 27
+    MODE_GRASS = 28
 
     def __init__(self, window_width, window_height):
         self.visible = False
@@ -3302,6 +3501,15 @@ class SandWindow:
         self._btn_bee = _Button(x, y, bw, bh, "BEES", font_size=fs,
                                 color=(120, 100, 20), active_color=(240, 210, 40)); c += 1
         x, y = _place(r, c)
+        self._btn_tree = _Button(x, y, bw, bh, "TREE", font_size=fs,
+                                 color=(40, 70, 15), active_color=(80, 160, 30)); c += 1
+        x, y = _place(r, c)
+        self._btn_grass = _Button(x, y, bw, bh, "GRASS", font_size=fs,
+                                  color=(20, 80, 15), active_color=(50, 180, 40))
+
+        # Row 6 — Player / close
+        r, c = 6, 0
+        x, y = _place(r, c)
         self._btn_player1 = _Button(x, y, bw, bh, "P1", font_size=fs,
                                     color=(0, 80, 120), active_color=(0, 200, 255)); c += 1
         x, y = _place(r, c)
@@ -3322,6 +3530,7 @@ class SandWindow:
             self._btn_slow, self._btn_fast, self._btn_quit,
             self._btn_seed, self._btn_worm,
             self._btn_glass, self._btn_bee,
+            self._btn_tree, self._btn_grass,
             self._btn_player1,
             self._btn_close_menu,
         ]
@@ -3394,6 +3603,7 @@ class SandWindow:
             self.MODE_FILL: "☰ FIL", self.MODE_SEED: "☰ SED",
             self.MODE_WORM: "☰ WRM", self.MODE_GLASS: "☰ GLS",
             self.MODE_BEE: "☰ BEE",
+            self.MODE_TREE: "☰ TRE", self.MODE_GRASS: "☰ GRS",
         }
         self._btn_menu.label = _mode_labels.get(self._mode, "☰")
         self._btn_pour.active = (self._mode == self.MODE_POUR)
@@ -3422,6 +3632,8 @@ class SandWindow:
         self._btn_worm.active = (self._mode == self.MODE_WORM)
         self._btn_glass.active = (self._mode == self.MODE_GLASS)
         self._btn_bee.active = (self._mode == self.MODE_BEE)
+        self._btn_tree.active = (self._mode == self.MODE_TREE)
+        self._btn_grass.active = (self._mode == self.MODE_GRASS)
         # Show what material fill will use
         _fill_names = {
             self.MODE_POUR: "FILL:S",
@@ -3643,6 +3855,12 @@ class SandWindow:
             if self._btn_bee.hit(px, py):
                 self._mode = self.MODE_BEE
                 self._update_button_states(); return
+            if self._btn_tree.hit(px, py):
+                self._mode = self.MODE_TREE
+                self._update_button_states(); return
+            if self._btn_grass.hit(px, py):
+                self._mode = self.MODE_GRASS
+                self._update_button_states(); return
             if self._btn_player1.hit(px, py):
                 # Spawn player at center-top of screen
                 spawn_gx = self._gw // 2
@@ -3805,10 +4023,35 @@ class SandWindow:
                     ry = gy + random.randint(-2, 2)
                     self._state.add(MAGMA, rx, ry, random.choice(_MAGMA_COLORS))
             elif self._mode == self.MODE_SEED:
+                for _ in range(15):
+                    rx = gx + random.randint(-4, 4)
+                    ry = gy + random.randint(-4, 2)
+                    self._state.add(SEED, rx, ry, random.choice(_SEED_COLORS))
+            elif self._mode == self.MODE_TREE:
+                # Drop a little acorn shape (cap + stem)
+                #   .XX.      <- cap top  (gy-2)
+                #  XXXX       <- cap mid  (gy-1)
+                #   XX.       <- body     (gy)
+                #   .X.       <- stem     (gy+1)
+                acorn_cells = [
+                    (-1, -2), (0, -2), (1, -2),           # cap top
+                    (-2, -1), (-1, -1), (0, -1), (1, -1), # cap mid
+                    (-1, 0), (0, 0), (1, 0),              # body
+                    (0, 1),                                 # stem/point
+                ]
+                _acorn_cap = {(-1, -2), (0, -2), (1, -2), (-2, -1), (-1, -1), (0, -1), (1, -1)}
+                for adx, ady in acorn_cells:
+                    ax, ay = gx + adx, gy + ady
+                    if (adx, ady) in _acorn_cap:
+                        self._state.add(TREESEED, ax, ay, random.choice([(100, 70, 20), (85, 58, 15), (110, 75, 25)]))
+                    else:
+                        self._state.add(TREESEED, ax, ay, random.choice(_TREESEED_COLORS))
+            elif self._mode == self.MODE_GRASS:
+                # Drop grass seeds like regular seeds
                 for _ in range(5):
                     rx = gx + random.randint(-2, 2)
                     ry = gy + random.randint(-2, 1)
-                    self._state.add(SEED, rx, ry, random.choice(_SEED_COLORS))
+                    self._state.add(GRASSSEED, rx, ry, random.choice(_GRASSSEED_COLORS))
             elif self._mode == self.MODE_FILL:
                 self._flood_fill(gx, gy)
             elif self._mode == self.MODE_BEE:
@@ -4054,11 +4297,38 @@ class SandWindow:
             self._last_wall_gx = None
             self._last_wall_gy = None
         elif self._mode == self.MODE_SEED:
-            # Drop a few seeds each frame while dragging
+            # Drop a clump of seeds each frame while dragging
+            for _ in range(15):
+                rx = gx + random.randint(-4, 4)
+                ry = gy + random.randint(-4, 2)
+                self._state.add(SEED, rx, ry, random.choice(_SEED_COLORS))
+            self._last_wall_gx = None
+            self._last_wall_gy = None
+        elif self._mode == self.MODE_TREE:
+            # Drop acorn shape — one-shot per pinch
+            if not getattr(self, '_gnome_spawned_this_pinch', False):
+                acorn_cells = [
+                    (-1, -2), (0, -2), (1, -2),
+                    (-2, -1), (-1, -1), (0, -1), (1, -1),
+                    (-1, 0), (0, 0), (1, 0),
+                    (0, 1),
+                ]
+                _acorn_cap = {(-1, -2), (0, -2), (1, -2), (-2, -1), (-1, -1), (0, -1), (1, -1)}
+                for adx, ady in acorn_cells:
+                    ax, ay = gx + adx, gy + ady
+                    if (adx, ady) in _acorn_cap:
+                        self._state.add(TREESEED, ax, ay, random.choice([(100, 70, 20), (85, 58, 15), (110, 75, 25)]))
+                    else:
+                        self._state.add(TREESEED, ax, ay, random.choice(_TREESEED_COLORS))
+                self._gnome_spawned_this_pinch = True
+            self._last_wall_gx = None
+            self._last_wall_gy = None
+        elif self._mode == self.MODE_GRASS:
+            # Drop grass seeds like regular seeds
             for _ in range(5):
                 rx = gx + random.randint(-2, 2)
                 ry = gy + random.randint(-2, 1)
-                self._state.add(SEED, rx, ry, random.choice(_SEED_COLORS))
+                self._state.add(GRASSSEED, rx, ry, random.choice(_GRASSSEED_COLORS))
             self._last_wall_gx = None
             self._last_wall_gy = None
         elif self._mode == self.MODE_WORM:
@@ -4158,7 +4428,7 @@ class SandWindow:
     _SCROLL_MODES = [
         MODE_POUR, MODE_HAND, MODE_WOOD, MODE_CONCRETE, MODE_ERASE,
         MODE_GNOME, MODE_FIRE, MODE_GUNPOWDER, MODE_NAPALM, MODE_GASOLINE,
-        MODE_WATER, MODE_CONFETTI, MODE_POISON, MODE_HOLYWATER, MODE_ICE, MODE_BOMB, MODE_FIREBOMB, MODE_MONEY, MODE_DIRT, MODE_MATCH, MODE_MAGMA, MODE_FILL, MODE_SEED, MODE_WORM, MODE_GLASS, MODE_BEE,
+        MODE_WATER, MODE_CONFETTI, MODE_POISON, MODE_HOLYWATER, MODE_ICE, MODE_BOMB, MODE_FIREBOMB, MODE_MONEY, MODE_DIRT, MODE_MATCH, MODE_MAGMA, MODE_FILL, MODE_SEED, MODE_WORM, MODE_GLASS, MODE_BEE, MODE_TREE, MODE_GRASS,
     ]
 
     def handle_scroll(self, direction):
@@ -4170,7 +4440,7 @@ class SandWindow:
         idx = (idx + direction) % len(self._SCROLL_MODES)
         self._mode = self._SCROLL_MODES[idx]
         # Update fill material for material modes
-        if self._mode not in (self.MODE_ERASE, self.MODE_GNOME, self.MODE_HAND, self.MODE_FILL, self.MODE_CONFETTI, self.MODE_POISON, self.MODE_HOLYWATER, self.MODE_ICE, self.MODE_BOMB, self.MODE_FIREBOMB, self.MODE_MONEY, self.MODE_MATCH, self.MODE_MAGMA, self.MODE_SEED, self.MODE_WORM, self.MODE_BEE):
+        if self._mode not in (self.MODE_ERASE, self.MODE_GNOME, self.MODE_HAND, self.MODE_FILL, self.MODE_CONFETTI, self.MODE_POISON, self.MODE_HOLYWATER, self.MODE_ICE, self.MODE_BOMB, self.MODE_FIREBOMB, self.MODE_MONEY, self.MODE_MATCH, self.MODE_MAGMA, self.MODE_SEED, self.MODE_WORM, self.MODE_BEE, self.MODE_TREE, self.MODE_GRASS):
             self._fill_material = self._mode
         self._update_button_states()
 
