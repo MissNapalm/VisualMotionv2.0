@@ -2364,7 +2364,7 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False, splash_dr
                     else:
                         sides = [side]
                     for s in sides:
-                        branch_len = random.randint(4, 10)
+                        branch_len = random.randint(8, 18)
                         new_tips.append({
                             'x': float(vix), 'y': float(viy),
                             'dx': float(s) * random.uniform(0.7, 1.0),
@@ -2378,10 +2378,10 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False, splash_dr
                     # Trunk finished — spawn canopy tips from the top
                     top_x = tip.get('trunk_top_x', vix)
                     top_y = tip.get('trunk_top_y', viy)
-                    num_canopy = random.randint(14, 20)
+                    num_canopy = random.randint(20, 30)
                     for _ in range(num_canopy):
                         angle = random.uniform(0, 2 * math.pi)
-                        length = random.randint(6, 14)
+                        length = random.randint(8, 18)
                         new_tips.append({
                             'x': float(top_x), 'y': float(top_y),
                             'dx': math.cos(angle) * 0.9,
@@ -2409,11 +2409,11 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False, splash_dr
                 if tip['remaining'] > 0:
                     still_growing.append(tip)
                 else:
-                    # Branch end — spawn small leaf cluster
-                    num_leaves = random.randint(4, 8)
+                    # Branch end — spawn leaf cluster
+                    num_leaves = random.randint(6, 12)
                     for _ in range(num_leaves):
                         angle = random.uniform(0, 2 * math.pi)
-                        length = random.randint(3, 7)
+                        length = random.randint(4, 10)
                         new_tips.append({
                             'x': float(vix), 'y': float(viy),
                             'dx': math.cos(angle) * 0.7,
@@ -2436,6 +2436,25 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False, splash_dr
                     c[viy, vix] = random.choice(_PLANT_COLORS)
                 elif cell in (PLANT, WOOD):
                     pass  # keep going through
+                else:
+                    continue
+                if tip['remaining'] > 0:
+                    still_growing.append(tip)
+            elif tip_type == 'grass':
+                # Grass blade — grow straight up, place GRASS
+                tip['x'] += tip['dx']
+                tip['y'] += tip['dy']
+                tip['remaining'] -= 1
+                vix = int(round(tip['x']))
+                viy = int(round(tip['y']))
+                if vix < 0 or vix >= w or viy < 0 or viy >= h:
+                    continue
+                cell = g[viy, vix]
+                if cell in (EMPTY, WATER, HOLYWATER):
+                    g[viy, vix] = GRASS
+                    c[viy, vix] = random.choice(_GRASS_COLORS)
+                elif cell == GRASS:
+                    pass  # already grass
                 else:
                     continue
                 if tip['remaining'] > 0:
@@ -2489,8 +2508,8 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False, splash_dr
         g[ty, tx] = WOOD
         c[ty, tx] = random.choice(_WOOD_COLORS)
         if vine_tips is not None:
-            trunk_height = random.randint(20, 36)
-            trunk_width = random.randint(1, 3)
+            trunk_height = random.randint(40, 60)
+            trunk_width = random.randint(2, 3)
             # Trunk tips — grow straight up, placing WOOD
             for dxx in range(-trunk_width + 1, trunk_width):
                 vine_tips.append({
@@ -2505,7 +2524,8 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False, splash_dr
                 })
 
     # ── Grass seed sprouting ───────────────────────────────────────
-    # GRASSSEED touching water sprouts very short grass (1-3 cells upward)
+    # GRASSSEED touching water starts growing grass gradually using vine_tips.
+    # Each grass seed spawns 1-3 short upward tips that place GRASS cells.
     gs_ys, gs_xs = np.where(g == GRASSSEED)
     for gi in range(len(gs_ys)):
         gy2, gx2 = int(gs_ys[gi]), int(gs_xs[gi])
@@ -2525,17 +2545,20 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False, splash_dr
                 break
         if not touching_water:
             continue
-        # Sprout! Convert seed to grass and grow 1-3 cells upward
+        # Sprout! Convert seed to grass and spawn short upward vine tips
         g[gy2, gx2] = GRASS
         c[gy2, gx2] = random.choice(_GRASS_COLORS)
-        blade_height = random.randint(1, 3)
-        for dy in range(1, blade_height + 1):
-            gsy = gy2 - dy
-            if 0 <= gsy < h and g[gsy, gx2] in (EMPTY, WATER, HOLYWATER):
-                g[gsy, gx2] = GRASS
-                c[gsy, gx2] = random.choice(_GRASS_COLORS)
-            else:
-                break  # hit something solid, stop growing
+        if vine_tips is not None:
+            blade_count = random.randint(1, 3)
+            for _ in range(blade_count):
+                vine_tips.append({
+                    'x': float(gx2 + random.uniform(-0.3, 0.3)),
+                    'y': float(gy2),
+                    'dx': random.uniform(-0.15, 0.15),
+                    'dy': -1.0,
+                    'remaining': random.randint(1, 3),
+                    'type': 'grass',
+                })
 
     # ── Fluid leveling pass ─────────────────────────────────────
     # Run several passes bottom-to-top.  For each fluid cell that
@@ -4028,24 +4051,8 @@ class SandWindow:
                     ry = gy + random.randint(-4, 2)
                     self._state.add(SEED, rx, ry, random.choice(_SEED_COLORS))
             elif self._mode == self.MODE_TREE:
-                # Drop a little acorn shape (cap + stem)
-                #   .XX.      <- cap top  (gy-2)
-                #  XXXX       <- cap mid  (gy-1)
-                #   XX.       <- body     (gy)
-                #   .X.       <- stem     (gy+1)
-                acorn_cells = [
-                    (-1, -2), (0, -2), (1, -2),           # cap top
-                    (-2, -1), (-1, -1), (0, -1), (1, -1), # cap mid
-                    (-1, 0), (0, 0), (1, 0),              # body
-                    (0, 1),                                 # stem/point
-                ]
-                _acorn_cap = {(-1, -2), (0, -2), (1, -2), (-2, -1), (-1, -1), (0, -1), (1, -1)}
-                for adx, ady in acorn_cells:
-                    ax, ay = gx + adx, gy + ady
-                    if (adx, ady) in _acorn_cap:
-                        self._state.add(TREESEED, ax, ay, random.choice([(100, 70, 20), (85, 58, 15), (110, 75, 25)]))
-                    else:
-                        self._state.add(TREESEED, ax, ay, random.choice(_TREESEED_COLORS))
+                # Drop one tree seed
+                self._state.add(TREESEED, gx, gy, random.choice(_TREESEED_COLORS))
             elif self._mode == self.MODE_GRASS:
                 # Drop grass seeds like regular seeds
                 for _ in range(5):
@@ -4305,21 +4312,9 @@ class SandWindow:
             self._last_wall_gx = None
             self._last_wall_gy = None
         elif self._mode == self.MODE_TREE:
-            # Drop acorn shape — one-shot per pinch
+            # Drop one tree seed — one-shot per pinch
             if not getattr(self, '_gnome_spawned_this_pinch', False):
-                acorn_cells = [
-                    (-1, -2), (0, -2), (1, -2),
-                    (-2, -1), (-1, -1), (0, -1), (1, -1),
-                    (-1, 0), (0, 0), (1, 0),
-                    (0, 1),
-                ]
-                _acorn_cap = {(-1, -2), (0, -2), (1, -2), (-2, -1), (-1, -1), (0, -1), (1, -1)}
-                for adx, ady in acorn_cells:
-                    ax, ay = gx + adx, gy + ady
-                    if (adx, ady) in _acorn_cap:
-                        self._state.add(TREESEED, ax, ay, random.choice([(100, 70, 20), (85, 58, 15), (110, 75, 25)]))
-                    else:
-                        self._state.add(TREESEED, ax, ay, random.choice(_TREESEED_COLORS))
+                self._state.add(TREESEED, gx, gy, random.choice(_TREESEED_COLORS))
                 self._gnome_spawned_this_pinch = True
             self._last_wall_gx = None
             self._last_wall_gy = None
@@ -4826,24 +4821,48 @@ class SandWindow:
         self._rgb_buf[st.grid == EMPTY] = 0
         self._rgb_buf[st.grid == TUNNEL] = 0
 
-        # Blit into pre-allocated small surface, then scale with camera zoom
-        pygame.surfarray.blit_array(self._pixel_surf, self._rgb_buf.transpose(1, 0, 2))
         cz = self._cam_zoom
-        scaled_w = int(self._ww * cz)
-        scaled_h = int(self._wh * cz)
         if cz > 1.01:
-            # Reuse pre-allocated zoomed surface — resize only if needed
-            if self._zoomed_surf.get_width() != scaled_w or self._zoomed_surf.get_height() != scaled_h:
-                self._zoomed_surf = pygame.Surface((scaled_w, scaled_h))
-            pygame.transform.scale(self._pixel_surf, (scaled_w, scaled_h), self._zoomed_surf)
-            surface.blit(self._zoomed_surf, (int(self._cam_x), int(self._cam_y)))
+            # OPTIMIZED: only render the visible portion of the grid.
+            # Instead of scaling the full grid to a huge surface, crop the
+            # visible region and scale just that to the window size.
+            gw, gh = self._gw, self._gh
+            # cam_x/cam_y are in window-pixel space; _pixel_surf is 1:1 grid
+            vis_x0 = int(-self._cam_x / cz)
+            vis_y0 = int(-self._cam_y / cz)
+            vis_x1 = vis_x0 + int(self._ww / cz) + 2
+            vis_y1 = vis_y0 + int(self._wh / cz) + 2
+            # Clamp to grid bounds
+            vis_x0 = max(0, vis_x0)
+            vis_y0 = max(0, vis_y0)
+            vis_x1 = min(gw, vis_x1)
+            vis_y1 = min(gh, vis_y1)
+            crop_w = vis_x1 - vis_x0
+            crop_h = vis_y1 - vis_y0
+            if crop_w > 0 and crop_h > 0:
+                # Extract visible slice, transpose for pygame (X,Y,3)
+                crop_rgb = self._rgb_buf[vis_y0:vis_y1, vis_x0:vis_x1].transpose(1, 0, 2)
+                # Create/reuse a small crop surface
+                if not hasattr(self, '_crop_surf') or self._crop_surf.get_width() != crop_w or self._crop_surf.get_height() != crop_h:
+                    self._crop_surf = pygame.Surface((crop_w, crop_h))
+                pygame.surfarray.blit_array(self._crop_surf, crop_rgb)
+                # Scale crop to fill the window
+                pygame.transform.scale(self._crop_surf, (self._ww, self._wh), self._scaled_surf)
+                surface.blit(self._scaled_surf, (0, 0))
+            # cam offsets for sprite drawing: compute from visible rect
+            # Sprites use: sx = (gx * _CELL + _CELL//2) * cam_z + cam_ox
+            # We need gx to map to screen as: (gx - vis_x0) * (ww / crop_w)
+            # So cam_z = ww / (crop_w * _CELL), cam_ox = -vis_x0 * _CELL * cam_z
+            cam_z = self._ww / max(1, crop_w * _CELL)
+            cam_ox = -vis_x0 * _CELL * cam_z
+            cam_oy = -vis_y0 * _CELL * cam_z
         else:
+            pygame.surfarray.blit_array(self._pixel_surf, self._rgb_buf.transpose(1, 0, 2))
             pygame.transform.scale(self._pixel_surf, (self._ww, self._wh), self._scaled_surf)
             surface.blit(self._scaled_surf, (0, 0))
-
-        cam_ox = self._cam_x if cz > 1.01 else 0.0
-        cam_oy = self._cam_y if cz > 1.01 else 0.0
-        cam_z = cz if cz > 1.01 else 1.0
+            cam_ox = 0.0
+            cam_oy = 0.0
+            cam_z = 1.0
 
         # Draw gnomes as stick figures (or zombie sprite)
         for gnome in self._gnomes:
