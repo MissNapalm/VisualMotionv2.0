@@ -78,8 +78,8 @@ def main():
                 mouse_down_time = now
                 # Tap for buttons
                 sand.handle_tap(mx, my)
-                # Check for quit button (only when menu is open)
-                if sand._menu_open and sand._btn_quit.hit(mx, my):
+                # Check for quit button
+                if sand._btn_quit.hit(mx, my):
                     # Re-open instead of closing (standalone mode)
                     sand.open()
                 last_click_time = now
