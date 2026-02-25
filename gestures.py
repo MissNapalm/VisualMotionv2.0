@@ -24,7 +24,7 @@ def _remap(v, lo, hi):
 # means the hand doesn't need to reach the very edge of the camera to hit
 # the screen edge.  Larger values = easier to reach that side.
 _PAD_L, _PAD_R = 0.18, 0.18
-_PAD_T, _PAD_B = 0.10, 0.10
+_PAD_T, _PAD_B = 0.08, 0.18
 
 
 def pinch_position(landmarks):

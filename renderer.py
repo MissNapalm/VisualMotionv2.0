@@ -1180,23 +1180,95 @@ def draw_wheel(surface, state, window_width, window_height):
     s = state.gui_scale
     cx, cy = state.wheel_center_x, state.wheel_center_y
     r = int(state.wheel_radius * s)
-    white = (255, 255, 255)
-    # Simple wheel — two circles + pointer + label (no glow, no arc segments)
-    pygame.draw.circle(surface, white, (cx, cy), r, max(1, int(4 * s)))
-    pygame.draw.circle(surface, white, (cx, cy), r - int(20 * s), max(1, int(2 * s)))
-    pl = r - int(30 * s)
-    px = cx + int(pl * math.cos(state.wheel_angle))
-    py = cy + int(pl * math.sin(state.wheel_angle))
-    pygame.draw.line(surface, white, (cx, cy), (px, py), max(1, int(3 * s)))
-    pygame.draw.circle(surface, white, (px, py), max(2, int(6 * s)))
-    pygame.draw.circle(surface, white, (cx, cy), max(2, int(8 * s)))
-    t = _render_text(f"GUI {state.gui_scale_target:.1f}x", max(18, int(40 * s)), white)
-    tr = t.get_rect(center=(cx, cy + r + int(44 * s)))
-    bg = pygame.Rect(tr.x - int(10 * s), tr.y - int(5 * s),
-                     tr.width + int(20 * s), tr.height + int(10 * s))
-    pygame.draw.rect(surface, (20, 20, 20), bg)
-    pygame.draw.rect(surface, white, bg, max(1, int(2 * s)))
-    surface.blit(t, tr)
+    now = _time.time()
+
+    # ── Frosted-glass disc ──
+    disc_size = r * 2 + 20
+    disc = pygame.Surface((disc_size, disc_size), pygame.SRCALPHA)
+    disc_cx, disc_cy = disc_size // 2, disc_size // 2
+    pygame.draw.circle(disc, (12, 18, 30, 90), (disc_cx, disc_cy), r)
+    surface.blit(disc, (cx - disc_size // 2, cy - disc_size // 2))
+
+    # ── Outer halo ring (soft glow) ──
+    for glow_i in range(3):
+        gr = r + 6 - glow_i * 2
+        alpha = 25 + glow_i * 15
+        pygame.draw.circle(surface, (*_MR_BLUE[:3], alpha), (cx, cy), gr, max(1, int(2 * s)))
+
+    # ── Main ring ──
+    pygame.draw.circle(surface, (*_MR_BLUE[:3], 160), (cx, cy), r, max(2, int(3 * s)))
+
+    # ── Segmented progress arc (40 segments) ──
+    seg_count = 40
+    seg_gap = 0.012  # radians gap between segments
+    seg_arc = (2 * math.pi - seg_count * seg_gap) / seg_count
+    # How far through the scale range (0.5 .. 3.0)
+    progress = max(0.0, min(1.0, (state.gui_scale_target - 0.5) / 2.5))
+    lit_segments = int(progress * seg_count)
+
+    inner_r = r - int(14 * s)
+    outer_r = r - int(4 * s)
+    for si in range(seg_count):
+        angle_start = -math.pi / 2 + si * (seg_arc + seg_gap)
+        angle_mid = angle_start + seg_arc / 2
+        # Each segment: just draw a thick line from inner to outer at mid-angle
+        ix = cx + int(inner_r * math.cos(angle_mid))
+        iy = cy + int(inner_r * math.sin(angle_mid))
+        ox = cx + int(outer_r * math.cos(angle_mid))
+        oy = cy + int(outer_r * math.sin(angle_mid))
+        if si < lit_segments:
+            # Lit: bright cyan
+            col = (*_MR_BLUE[:3], 200)
+        else:
+            # Dim: faint
+            col = (*_MR_DIM[:3], 40)
+        pygame.draw.line(surface, col, (ix, iy), (ox, oy), max(2, int(3 * s)))
+
+    # ── Orbiting dot ──
+    orbit_angle = state.wheel_angle
+    dot_r = r - int(9 * s)
+    dot_x = cx + int(dot_r * math.cos(orbit_angle))
+    dot_y = cy + int(dot_r * math.sin(orbit_angle))
+    # Glow
+    pygame.draw.circle(surface, (*_MR_BLUE[:3], 50), (dot_x, dot_y), max(6, int(10 * s)))
+    pygame.draw.circle(surface, (*_MR_WHITE[:3], 220), (dot_x, dot_y), max(3, int(5 * s)))
+
+    # ── Inner ring ──
+    pygame.draw.circle(surface, (*_MR_DIM[:3], 60), (cx, cy), inner_r - int(4 * s), max(1, int(1 * s)))
+
+    # ── Center readout ──
+    scale_text = f"{state.gui_scale_target:.1f}x"
+    scale_img = _render_text(scale_text, max(22, int(48 * s)), _MR_WHITE)
+    surface.blit(scale_img, scale_img.get_rect(center=(cx, cy - int(6 * s))))
+
+    label_img = _render_text("GUI SCALE", max(10, int(16 * s)), _MR_DIM)
+    surface.blit(label_img, label_img.get_rect(center=(cx, cy + int(22 * s))))
+
+    # ── Thin horizontal bar below ring ──
+    bar_w = int(r * 1.4)
+    bar_h = max(2, int(3 * s))
+    bar_x = cx - bar_w // 2
+    bar_y = cy + r + int(18 * s)
+    # Background bar
+    pygame.draw.rect(surface, (*_MR_DIM[:3], 40), (bar_x, bar_y, bar_w, bar_h), border_radius=2)
+    # Filled portion
+    fill_w = int(bar_w * progress)
+    if fill_w > 0:
+        pygame.draw.rect(surface, (*_MR_BLUE[:3], 180), (bar_x, bar_y, fill_w, bar_h), border_radius=2)
+    # End pip
+    pip_x = bar_x + fill_w
+    pygame.draw.circle(surface, _MR_WHITE, (pip_x, bar_y + bar_h // 2), max(3, int(4 * s)))
+
+    # ── Corner brackets on the disc ──
+    bk_len = max(8, int(16 * s))
+    bk_off = r + int(4 * s)
+    bk_col = (*_MR_DIM[:3], 80)
+    corners = [(-1, -1), (1, -1), (-1, 1), (1, 1)]
+    for dx, dy in corners:
+        bx = cx + dx * bk_off
+        by = cy + dy * bk_off
+        pygame.draw.line(surface, bk_col, (bx, by), (bx + dx * bk_len, by), 1)
+        pygame.draw.line(surface, bk_col, (bx, by), (bx, by + dy * bk_len), 1)
 
 
 # ==============================

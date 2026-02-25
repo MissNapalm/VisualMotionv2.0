@@ -325,16 +325,25 @@ class NetScanWindow:
     def hit_test(self, px, py, gui_scale):
         return self._rect(gui_scale).collidepoint(int(px), int(py))
 
+    @staticmethod
+    def _inflated(rect, pad=12):
+        """Return a copy of *rect* inflated by *pad* px on each side."""
+        if rect is None:
+            return None
+        return rect.inflate(pad * 2, pad * 2)
+
     def handle_tap(self, px: float, py: float, gui_scale: float = 1.0) -> bool:
         if not self.visible:
             return False
         ipx, ipy = int(px), int(py)
 
-        if self._quit_btn_rect and self._quit_btn_rect.collidepoint(ipx, ipy):
+        r = self._inflated(self._quit_btn_rect)
+        if r and r.collidepoint(ipx, ipy):
             self.close()
             return True
 
-        if self._scan_btn_rect and self._scan_btn_rect.collidepoint(ipx, ipy):
+        r = self._inflated(self._scan_btn_rect)
+        if r and r.collidepoint(ipx, ipy):
             if not self._scanner.scanning:
                 self._scanner.start_scan()
             return True

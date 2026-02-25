@@ -186,6 +186,13 @@ class FilesWindow:
         return pygame.Rect((self._sw - w) // 2, (self._sh - h) // 2, w, h)
 
     # ── handle_tap ──────────────────────────────────────────────────
+    @staticmethod
+    def _inflated(rect, pad=12):
+        """Return a copy of *rect* inflated by *pad* px on each side."""
+        if rect is None:
+            return None
+        return rect.inflate(pad * 2, pad * 2)
+
     def handle_tap(self, px: float, py: float, gui_scale: float = 1.0) -> bool:
         """Single pinch-tap.
         • Folders: open immediately (navigate in).
@@ -197,24 +204,28 @@ class FilesWindow:
         ipx, ipy = int(px), int(py)
 
         # Quit button
-        if self._quit_btn_rect and self._quit_btn_rect.collidepoint(ipx, ipy):
+        r = self._inflated(self._quit_btn_rect)
+        if r and r.collidepoint(ipx, ipy):
             self.close()
             if self._snd_whoosh:
                 self._snd_whoosh.play()
             return True
 
         # Back button
-        if self._back_btn_rect and self._back_btn_rect.collidepoint(ipx, ipy):
+        r = self._inflated(self._back_btn_rect)
+        if r and r.collidepoint(ipx, ipy):
             self._go_back()
             return True
 
         # Up button
-        if self._up_btn_rect and self._up_btn_rect.collidepoint(ipx, ipy):
+        r = self._inflated(self._up_btn_rect)
+        if r and r.collidepoint(ipx, ipy):
             self._go_up()
             return True
 
         # CUT button
-        if self._cut_btn_rect and self._cut_btn_rect.collidepoint(ipx, ipy):
+        r = self._inflated(self._cut_btn_rect)
+        if r and r.collidepoint(ipx, ipy):
             if 0 <= self._selected_idx < len(self._entries):
                 self._clipboard_path = self._entries[self._selected_idx]["path"]
                 self._clipboard_mode = "cut"
@@ -222,7 +233,8 @@ class FilesWindow:
             return True
 
         # COPY button
-        if self._copy_btn_rect and self._copy_btn_rect.collidepoint(ipx, ipy):
+        r = self._inflated(self._copy_btn_rect)
+        if r and r.collidepoint(ipx, ipy):
             if 0 <= self._selected_idx < len(self._entries):
                 self._clipboard_path = self._entries[self._selected_idx]["path"]
                 self._clipboard_mode = "copy"
@@ -230,7 +242,8 @@ class FilesWindow:
             return True
 
         # PASTE button
-        if self._paste_btn_rect and self._paste_btn_rect.collidepoint(ipx, ipy):
+        r = self._inflated(self._paste_btn_rect)
+        if r and r.collidepoint(ipx, ipy):
             self._do_paste()
             return True
 

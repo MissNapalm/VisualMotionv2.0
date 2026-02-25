@@ -232,12 +232,19 @@ class App:
                     st.last_pinch_x - st.pinch_start_pos[0],
                     st.last_pinch_y - st.pinch_start_pos[1],
                 )
-                if total <= st.movement_threshold and not st.scroll_unlocked:
+                # Bottom-zone bonus: allow more drift near screen bottom
+                # (hand near camera edge = more jitter)
+                eff_thresh = st.movement_threshold
+                if st.last_pinch_y > WINDOW_HEIGHT * 0.72:
+                    eff_thresh = int(st.movement_threshold * 1.8)
+                if total <= eff_thresh and not st.scroll_unlocked:
                     # Sand buttons were already handled on pinch-down
                     if self._sand.visible and getattr(st, '_sand_btn_consumed', False):
                         pass  # don't double-fire
                     else:
-                        self._tap = st.pinch_start_pos
+                        # Use final position — more accurate for where user
+                        # was actually pointing, especially at screen edges
+                        self._tap = (st.last_pinch_x, st.last_pinch_y)
                 st.last_pinch_time = time.time()
             st.reset_pinch()
             # Also end sand pinch tracking

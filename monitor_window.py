@@ -611,16 +611,25 @@ class MonitorWindow:
         return pygame.Rect(m, m, self._ww - m * 2, self._wh - m * 2)
 
     # ── input ───────────────────────────────────────────────────────
+    @staticmethod
+    def _inflated(rect, pad=12):
+        """Return a copy of *rect* inflated by *pad* px on each side."""
+        if rect is None:
+            return None
+        return rect.inflate(pad * 2, pad * 2)
+
     def handle_tap(self, px: float, py: float, gui_scale: float = 1.0):
         if not self.visible:
             return
         ix, iy = int(px), int(py)
-        if self._quit_btn_rect and self._quit_btn_rect.collidepoint(ix, iy):
+        r = self._inflated(self._quit_btn_rect)
+        if r and r.collidepoint(ix, iy):
             self.close()
             return
         # Kill button (only visible when a process is selected)
-        if (self._kill_btn_rect and self._kill_btn_pid is not None
-                and self._kill_btn_rect.collidepoint(ix, iy)):
+        r = self._inflated(self._kill_btn_rect)
+        if (r and self._kill_btn_pid is not None
+                and r.collidepoint(ix, iy)):
             self._kill_process(self._kill_btn_pid)
             self._selected_pid = None
             return
