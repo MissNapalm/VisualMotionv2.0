@@ -119,6 +119,68 @@ def draw_stars_bg(surface):
 
 
 # ==============================
+# Scrolling hex-code rain (sci-fi background)
+# ==============================
+_hex_columns: list | None = None
+_HEX_COLS = 22          # number of columns across the screen
+_HEX_ROWS = 50          # total rows per column (wraps around)
+_hex_font_size = 13
+_hex_seed_w = 0
+_hex_seed_h = 0
+_hex_strip_cache: dict[int, pygame.Surface] | None = None  # pre-rendered column strips
+
+def _init_hex_columns(w, h):
+    """Pre-generate column positions, speeds, and pre-render each column strip."""
+    global _hex_columns, _hex_seed_w, _hex_seed_h, _hex_strip_cache
+    _hex_seed_w, _hex_seed_h = w, h
+    rng = _star_rand.Random(99)
+    col_spacing = w // _HEX_COLS
+    row_h = _hex_font_size + 4
+    font = get_font(_hex_font_size)
+    text_color = (35, 50, 70)  # _MR_FAINT equivalent (avoid forward-ref at import)
+
+    _hex_columns = []
+    _hex_strip_cache = {}
+    for i in range(_HEX_COLS):
+        x = int(col_spacing * (i + 0.5))
+        speed = rng.uniform(6, 22)
+        phase = rng.random() * 10000
+        _hex_columns.append({"x": x, "speed": speed, "phase": phase})
+
+        # Pre-render the entire column as one tall strip surface
+        strip_h = _HEX_ROWS * row_h
+        strip = pygame.Surface((50, strip_h), pygame.SRCALPHA)
+        for j in range(_HEX_ROWS):
+            hex_str = f"{rng.randint(0, 0xFFFF):04X}"
+            img = font.render(hex_str, True, text_color)
+            strip.blit(img, (0, j * row_h))
+        strip.set_alpha(18)  # barely visible
+        _hex_strip_cache[i] = strip
+
+def draw_hex_rain(surface, win_w, win_h):
+    """Draw barely-visible scrolling hex codes behind everything.
+    Only active on sci-fi theme. Returns True if drawn."""
+    if _theme_id != _THEME_SCIFI:
+        return False
+    if _hex_columns is None or _hex_seed_w != win_w or _hex_seed_h != win_h:
+        _init_hex_columns(win_w, win_h)
+
+    now = _star_time.time()
+    row_h = _hex_font_size + 4
+
+    for i, col in enumerate(_hex_columns):
+        strip = _hex_strip_cache[i]
+        strip_h = strip.get_height()
+        # Scroll offset in pixels (wraps)
+        offset = int((now * col["speed"] + col["phase"]) % strip_h)
+        x = col["x"]
+        # Blit the strip twice to create seamless wrap-around scroll
+        surface.blit(strip, (x, -offset))
+        surface.blit(strip, (x, -offset + strip_h))
+    return True
+
+
+# ==============================
 # Theme toggle button (top-left)
 # ==============================
 _THEME_BTN_W = 90
@@ -135,13 +197,11 @@ def draw_theme_button(surface):
     next_name = _THEME_NAMES[next_id]
 
     if _theme_id == _THEME_SCIFI:
-        # Sci-fi angular button (turquoise)
-        cut = 8
-        pts = [(r.x, r.y), (r.right - cut, r.y), (r.right, r.y + cut),
-               (r.right, r.bottom), (r.x + cut, r.bottom), (r.x, r.bottom - cut)]
-        pygame.draw.polygon(surface, (8, 18, 22), pts)
-        pygame.draw.polygon(surface, (0, 255, 220), pts, 2)
-        lbl = _render_text(next_name, 20, (0, 255, 220))
+        # Minority-Report rounded button (cold blue-silver)
+        br = 8
+        pygame.draw.rect(surface, (14, 22, 32), r, border_radius=br)
+        pygame.draw.rect(surface, (120, 160, 200), r, width=1, border_radius=br)
+        lbl = _render_text(next_name, 20, (200, 215, 230))
     elif _theme_id == _THEME_ICE:
         # Ice angular button (light blue)
         cut = 8
@@ -247,11 +307,11 @@ def draw_cyber_grid(surface, win_w, win_h):
 
     # Theme-aware colors
     if _theme_id == _THEME_SCIFI:
-        base_color = (0, 180, 160)     # teal / cyan
-        node_color = (0, 220, 200)
-        pulse_color = (0, 255, 230)
-        base_alpha = 18
-        node_alpha = 30
+        base_color = (60, 85, 115)     # cool blue-gray (MR palette)
+        node_color = (120, 160, 200)
+        pulse_color = (140, 180, 220)
+        base_alpha = 14
+        node_alpha = 22
     elif _theme_id == _THEME_ICE:
         base_color = (100, 160, 220)   # pale blue
         node_color = (130, 190, 255)
@@ -428,7 +488,7 @@ _app_color_cache: dict[str, tuple] = {}
 # Card surface cache: (app_name, w, h, is_selected) -> Surface
 # Rendered at exact target size for crisp text — no scaling artifacts.
 _card_surface_cache: dict[tuple, pygame.Surface] = {}
-# ── Sci-fi turquoise palette ──
+# ── Sci-fi turquoise palette (legacy, kept for ice fallback) ──
 _CYAN_BRIGHT  = (0, 255, 220)
 _CYAN_MID     = (0, 180, 160)
 _CYAN_DIM     = (0, 100, 90)
@@ -436,6 +496,14 @@ _CYAN_DARK    = (0, 50, 45)
 _PANEL_BG     = (8, 18, 22)        # near-black panel body
 _PANEL_BG_SEL = (12, 28, 32)       # slightly lighter when selected
 _BAR_HEIGHT_FRAC = 0.14            # title-bar height as fraction of card height
+
+# ── Minority-Report-inspired palette (desaturated cold blue-silver) ──
+_MR_WHITE     = (200, 215, 230)    # cold white text / bright accents
+_MR_BLUE      = (120, 160, 200)    # mid-tone cool blue
+_MR_DIM       = (60,  85, 115)     # dim structural lines
+_MR_FAINT     = (35,  50,  70)     # very faint accents
+_MR_GLASS     = (15,  22,  32)     # frosted-glass body tint
+_MR_GLOW      = (140, 180, 220)    # selection glow
 
 # ── Ice (light-blue) palette ──
 _ICE_BRIGHT   = (100, 180, 255)
@@ -482,150 +550,150 @@ def _get_card_classic(app_name, w, h, gui_scale, is_selected):
 
 
 def _get_card_scifi(app_name, w, h, gui_scale, is_selected):
-    """Render a futuristic angular sci-fi window tile with HUD details."""
-    import time as _t
-    pad = int(8 * gui_scale) if is_selected else 0
+    """Render a Minority-Report-inspired translucent glass panel tile."""
+    pad = int(10 * gui_scale) if is_selected else 0
     sw, sh = w + pad * 2, h + pad * 2
     surf = pygame.Surface((sw, sh), pygame.SRCALPHA)
     cx, cy = sw // 2, sh // 2
 
     # Card body rect
     rx, ry, rw, rh = cx - w // 2, cy - h // 2, w, h
-    bar_h = max(8, int(rh * _BAR_HEIGHT_FRAC))
-    corner_cut = max(6, int(18 * gui_scale))
+    br = max(8, int(14 * gui_scale))  # rounded corners — curves, not angular cuts
+    line_inset = max(8, int(16 * gui_scale))
 
-    # ── Panel body (angular polygon — top-right and bottom-left corners cut) ──
-    body_color = _PANEL_BG_SEL if is_selected else _PANEL_BG
-    body_pts = [
-        (rx, ry),
-        (rx + rw - corner_cut, ry),
-        (rx + rw, ry + corner_cut),
-        (rx + rw, ry + rh),
-        (rx + corner_cut, ry + rh),
-        (rx, ry + rh - corner_cut),
-    ]
-    pygame.draw.polygon(surf, body_color, body_pts)
+    # ── 1. Frosted-glass panel body (semi-transparent) ──
+    glass_alpha = 115 if is_selected else 85
+    glass_surf = pygame.Surface((rw, rh), pygame.SRCALPHA)
+    pygame.draw.rect(glass_surf, (*_MR_GLASS, glass_alpha), (0, 0, rw, rh), border_radius=br)
+    surf.blit(glass_surf, (rx, ry))
 
-    # ── Scanline overlay (faint horizontal lines across body) ──
-    scan_surf = pygame.Surface((rw, rh), pygame.SRCALPHA)
-    scan_gap = max(3, int(4 * gui_scale))
-    for sy in range(0, rh, scan_gap):
-        pygame.draw.line(scan_surf, (0, 255, 220, 8), (0, sy), (rw, sy), 1)
-    surf.blit(scan_surf, (rx, ry))
+    # ── 2. Subtle inner edge highlight (frosted glass rim) ──
+    rim_alpha = 30 if is_selected else 18
+    rim_surf = pygame.Surface((rw, rh), pygame.SRCALPHA)
+    pygame.draw.rect(rim_surf, (*_MR_DIM, rim_alpha), (0, 0, rw, rh), border_radius=br)
+    inner_margin = max(3, int(6 * gui_scale))
+    inner_rect = (inner_margin, inner_margin, rw - inner_margin * 2, rh - inner_margin * 2)
+    inner_br = max(5, br - inner_margin)
+    pygame.draw.rect(rim_surf, (0, 0, 0, rim_alpha), inner_rect, border_radius=inner_br)
+    surf.blit(rim_surf, (rx, ry))
 
-    # ── Grid dot pattern (subtle circuit-board feel) ──
-    dot_gap = max(10, int(16 * gui_scale))
-    dot_r = max(1, int(1 * gui_scale))
-    dot_c = (*_CYAN_DIM[:3], 35)
-    for gx in range(rx + dot_gap, rx + rw - dot_gap // 2, dot_gap):
-        for gy in range(ry + bar_h + dot_gap, ry + rh - dot_gap // 2, dot_gap):
-            pygame.draw.circle(surf, dot_c, (gx, gy), dot_r)
+    # ── 3. Thin horizontal divider line (top quarter — separates title zone) ──
+    div_y = ry + int(rh * 0.26)
+    line_color = _MR_DIM if not is_selected else _MR_BLUE
+    lw = max(1, int(1 * gui_scale))
+    pygame.draw.line(surf, (*line_color, 100),
+                     (rx + line_inset, div_y), (rx + rw - line_inset, div_y), lw)
 
-    # ── Title bar (angular, matches top shape) ──
-    bar_color = _CYAN_DIM if not is_selected else _CYAN_MID
-    bar_pts = [
-        (rx, ry),
-        (rx + rw - corner_cut, ry),
-        (rx + rw, ry + corner_cut),
-        (rx + rw, ry + bar_h),
-        (rx, ry + bar_h),
-    ]
-    pygame.draw.polygon(surf, bar_color, bar_pts)
+    # ── 4. Small arc accent (circular motif — Minority Report curve) ──
+    arc_r = max(10, int(28 * gui_scale))
+    arc_cx = rx + rw - int(24 * gui_scale)
+    arc_cy = ry + int(20 * gui_scale)
+    arc_color = _MR_BLUE if is_selected else _MR_DIM
+    arc_rect = pygame.Rect(arc_cx - arc_r, arc_cy - arc_r, arc_r * 2, arc_r * 2)
+    pygame.draw.arc(surf, (*arc_color, 90), arc_rect,
+                    math.radians(200), math.radians(340),
+                    max(1, int(2 * gui_scale)))
 
-    # ── Thin accent line under the bar ──
-    accent = _CYAN_BRIGHT if is_selected else _CYAN_MID
-    lw = max(1, int(2 * gui_scale))
-    pygame.draw.line(surf, accent, (rx, ry + bar_h), (rx + rw, ry + bar_h), lw)
+    # ── 5. Second arc (bottom-left, mirror) ──
+    arc2_r = max(8, int(20 * gui_scale))
+    arc2_cx = rx + int(22 * gui_scale)
+    arc2_cy = ry + rh - int(18 * gui_scale)
+    arc2_rect = pygame.Rect(arc2_cx - arc2_r, arc2_cy - arc2_r, arc2_r * 2, arc2_r * 2)
+    pygame.draw.arc(surf, (*_MR_FAINT, 70), arc2_rect,
+                    math.radians(20), math.radians(160),
+                    max(1, int(1 * gui_scale)))
 
-    # ── Pulsing status dot in title bar ──
-    pulse = (math.sin(_t.time() * 4) + 1) * 0.5  # 0..1
-    dot_x = rx + rw - int(12 * gui_scale)
-    dot_y = ry + bar_h // 2
-    dot_sz = max(2, int(4 * gui_scale))
-    dot_col = (int(0 + 255 * pulse), int(200 + 55 * pulse), int(180 + 40 * pulse))
-    pygame.draw.circle(surf, dot_col, (dot_x, dot_y), dot_sz)
+    # ── 6. Thin vertical accent line (left side, inset) ──
+    vert_x = rx + int(6 * gui_scale)
+    vert_y1 = div_y + int(10 * gui_scale)
+    vert_y2 = ry + rh - int(28 * gui_scale)
+    pygame.draw.line(surf, (*_MR_FAINT, 50),
+                     (vert_x, vert_y1), (vert_x, vert_y2), 1)
 
-    # ── Border outline (angular, same shape as body) ──
-    border_color = _CYAN_BRIGHT if is_selected else _CYAN_DIM
-    border_w = max(2, int(3 * gui_scale)) if is_selected else max(1, int(2 * gui_scale))
-    pygame.draw.polygon(surf, border_color, body_pts, border_w)
+    # ── 7. Short horizontal tick marks off the vertical accent ──
+    tick_len = max(3, int(8 * gui_scale))
+    num_ticks = 4
+    if vert_y2 > vert_y1 + 20:
+        tick_spacing = (vert_y2 - vert_y1) // max(1, num_ticks + 1)
+        for i in range(1, num_ticks + 1):
+            ty = vert_y1 + i * tick_spacing
+            pygame.draw.line(surf, (*_MR_FAINT, 40),
+                             (vert_x, ty), (vert_x + tick_len, ty), 1)
 
-    # ── Decorative corner tick marks (all 4 sharp corners) ──
-    tick = max(4, int(12 * gui_scale))
-    tick_w = max(1, int(2 * gui_scale))
-    pygame.draw.line(surf, _CYAN_BRIGHT, (rx, ry), (rx + tick, ry), tick_w)
-    pygame.draw.line(surf, _CYAN_BRIGHT, (rx, ry), (rx, ry + tick), tick_w)
-    pygame.draw.line(surf, _CYAN_BRIGHT, (rx + rw, ry + rh), (rx + rw - tick, ry + rh), tick_w)
-    pygame.draw.line(surf, _CYAN_BRIGHT, (rx + rw, ry + rh), (rx + rw, ry + rh - tick), tick_w)
-    # Extra ticks on cut corners
-    pygame.draw.line(surf, _CYAN_BRIGHT, (rx + rw - corner_cut, ry),
-                     (rx + rw - corner_cut + tick // 2, ry), tick_w)
-    pygame.draw.line(surf, _CYAN_BRIGHT, (rx + corner_cut, ry + rh),
-                     (rx + corner_cut - tick // 2, ry + rh), tick_w)
+    # ── 8. Right-side thin bracket line (futuristic readout feel) ──
+    bkt_x = rx + rw - int(8 * gui_scale)
+    bkt_y1 = div_y + int(20 * gui_scale)
+    bkt_y2 = ry + rh - int(40 * gui_scale)
+    bkt_len = max(3, int(6 * gui_scale))
+    pygame.draw.line(surf, (*_MR_FAINT, 40),
+                     (bkt_x, bkt_y1), (bkt_x, bkt_y2), 1)
+    # Top and bottom end-caps (horizontal)
+    pygame.draw.line(surf, (*_MR_FAINT, 40),
+                     (bkt_x - bkt_len, bkt_y1), (bkt_x, bkt_y1), 1)
+    pygame.draw.line(surf, (*_MR_FAINT, 40),
+                     (bkt_x - bkt_len, bkt_y2), (bkt_x, bkt_y2), 1)
 
-    # ── Small diagonal accent stripes in top-right cut ──
-    stripe_color = (*_CYAN_DIM[:3], 80)
-    for i in range(1, 4):
-        off = int(corner_cut * i / 4)
-        sx1 = rx + rw - corner_cut + off
-        sy1 = ry
-        sx2 = rx + rw
-        sy2 = ry + off
-        pygame.draw.line(surf, stripe_color, (sx1, sy1), (sx2, sy2), 1)
+    # ── 9. Bottom divider line (thinner, separates status area) ──
+    bot_div_y = ry + rh - int(24 * gui_scale)
+    pygame.draw.line(surf, (*_MR_FAINT, 60),
+                     (rx + line_inset, bot_div_y), (rx + rw - line_inset, bot_div_y), 1)
 
-    # ── Bottom-left cut hatch lines ──
-    for i in range(1, 4):
-        off = int(corner_cut * i / 4)
-        pygame.draw.line(surf, stripe_color,
-                         (rx, ry + rh - corner_cut + off),
-                         (rx + off, ry + rh), 1)
+    # ── 10. Tiny corner dots (glass panel mounting points) ──
+    dot_r = max(1, int(2 * gui_scale))
+    dot_inset = max(6, int(10 * gui_scale))
+    dot_col = (*_MR_DIM, 60)
+    for dx, dy in [(rx + dot_inset, ry + dot_inset),
+                   (rx + rw - dot_inset, ry + dot_inset),
+                   (rx + dot_inset, ry + rh - dot_inset),
+                   (rx + rw - dot_inset, ry + rh - dot_inset)]:
+        pygame.draw.circle(surf, dot_col, (dx, dy), dot_r)
 
-    # ── App name in title bar ──
-    bar_text_size = max(10, int(22 * gui_scale))
-    bar_text = _render_text(app_name, bar_text_size, _CYAN_BRIGHT)
-    surf.blit(bar_text, (rx + max(4, int(10 * gui_scale)),
-                         ry + bar_h // 2 - bar_text.get_height() // 2))
+    # ── 11. App name in title zone ──
+    title_size = max(10, int(22 * gui_scale))
+    title_color = _MR_WHITE if is_selected else _MR_BLUE
+    title_img = _render_text(app_name, title_size, title_color)
+    surf.blit(title_img, (rx + line_inset,
+                          ry + int(rh * 0.13) - title_img.get_height() // 2))
 
-    # ── Large icon letter centred in panel body ──
+    # ── 12. Large icon letter centred in body ──
     icon_size = max(24, int(100 * gui_scale))
-    icon_color = _CYAN_BRIGHT if is_selected else _CYAN_MID
+    icon_color = _MR_WHITE if is_selected else (*_MR_BLUE[:3],)
     icon_img = _render_text(app_name[0], icon_size, icon_color)
-    body_center_y = ry + bar_h + (rh - bar_h) // 2
-    surf.blit(icon_img, icon_img.get_rect(center=(cx, body_center_y - int(14 * gui_scale))))
+    body_center_y = div_y + (ry + rh - div_y) // 2
+    surf.blit(icon_img, icon_img.get_rect(center=(cx, body_center_y - int(12 * gui_scale))))
 
-    # ── Sub-label below icon ──
-    sub_size = max(10, int(28 * gui_scale))
-    sub_img = _render_text(app_name, sub_size, _CYAN_DIM)
-    surf.blit(sub_img, sub_img.get_rect(center=(cx, body_center_y + int(38 * gui_scale))))
+    # ── 13. Sub-label below icon ──
+    sub_size = max(10, int(24 * gui_scale))
+    sub_img = _render_text(app_name, sub_size, _MR_DIM)
+    surf.blit(sub_img, sub_img.get_rect(center=(cx, body_center_y + int(36 * gui_scale))))
 
-    # ── HUD data readout line (bottom of card) ──
-    data_size = max(8, int(14 * gui_scale))
-    data_color = (*_CYAN_DIM[:3], 140)
-    data_text = f"SYS.{app_name[:3].upper()}.OK"
-    data_img = _render_text(data_text, data_size, data_color)
-    surf.blit(data_img, (rx + int(6 * gui_scale), ry + rh - data_img.get_height() - int(6 * gui_scale)))
+    # ── 14. Status readout text bottom-left ──
+    stat_size = max(8, int(12 * gui_scale))
+    stat_text = f"{app_name[:3].upper()} ACTIVE"
+    stat_img = _render_text(stat_text, stat_size, (*_MR_FAINT[:3],))
+    stat_x = rx + line_inset
+    stat_y = ry + rh - stat_img.get_height() - int(6 * gui_scale)
+    surf.blit(stat_img, (stat_x, stat_y))
 
-    # ── Thin horizontal bracket lines near bottom ──
-    bkt_y = ry + rh - int(22 * gui_scale)
-    bkt_c = (*_CYAN_DIM[:3], 60)
-    bkt_w2 = rw // 3
-    pygame.draw.line(surf, bkt_c, (rx + rw - bkt_w2 - int(4 * gui_scale), bkt_y),
-                     (rx + rw - int(4 * gui_scale), bkt_y), 1)
-    # Small vertical end-caps
-    pygame.draw.line(surf, bkt_c, (rx + rw - int(4 * gui_scale), bkt_y),
-                     (rx + rw - int(4 * gui_scale), bkt_y + int(4 * gui_scale)), 1)
+    # ── 15. Small "ID" tag bottom-right ──
+    id_text = f"ID:{ord(app_name[0]):03X}"
+    id_img = _render_text(id_text, stat_size, (*_MR_FAINT[:3],))
+    surf.blit(id_img, (rx + rw - id_img.get_width() - line_inset, stat_y))
 
-    # ── Selection glow border (outer) ──
+    # ── 16. Thin rounded border ──
+    border_color = _MR_BLUE if is_selected else _MR_DIM
+    border_w = max(2, int(3 * gui_scale)) if is_selected else max(1, int(1 * gui_scale))
+    pygame.draw.rect(surf, border_color, (rx, ry, rw, rh),
+                     width=border_w, border_radius=br)
+
+    # ── 17. Selection outer glow ──
     if is_selected:
-        glow_pts = [
-            (rx - 3, ry - 3),
-            (rx + rw - corner_cut + 1, ry - 3),
-            (rx + rw + 3, ry + corner_cut - 1),
-            (rx + rw + 3, ry + rh + 3),
-            (rx + corner_cut - 1, ry + rh + 3),
-            (rx - 3, ry + rh - corner_cut + 1),
-        ]
-        pygame.draw.polygon(surf, _CYAN_BRIGHT, glow_pts, max(2, int(4 * gui_scale)))
+        glow_expand = max(3, int(5 * gui_scale))
+        glow_rect = (rx - glow_expand, ry - glow_expand,
+                     rw + glow_expand * 2, rh + glow_expand * 2)
+        glow_br = br + glow_expand
+        pygame.draw.rect(surf, (*_MR_GLOW, 90), glow_rect,
+                         width=max(2, int(3 * gui_scale)), border_radius=glow_br)
 
     return surf
 
@@ -779,8 +847,9 @@ def _get_card_ice(app_name, w, h, gui_scale, is_selected):
 def _get_card_surface(app_name, w, h, gui_scale, is_selected):
     """Dispatch to the active theme's card renderer, with caching."""
     import time as _t
-    # For animated themes, bucket time to ~8 fps animation so cache still helps
-    if _theme_id != _THEME_CLASSIC:
+    # Ice theme has pulsing dot animation — bucket time to ~8 fps so cache helps.
+    # Sci-fi (Minority Report) and classic are fully static — no time dependency.
+    if _theme_id == _THEME_ICE:
         time_bucket = int(_t.time() * 8)
     else:
         time_bucket = 0

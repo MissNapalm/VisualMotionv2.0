@@ -10,25 +10,25 @@ from renderer import is_dark_theme, is_ice_theme
 
 # ── palettes ───────────────────────────────────────────────────────
 _SCIFI = {
-    "bright":  (0, 255, 220),
-    "mid":     (0, 180, 160),
-    "dim":     (0, 100, 90),
-    "dark":    (0, 50, 45),
-    "panel":   (8, 18, 22),
-    "header":  (10, 24, 28),
-    "stripe":  (14, 28, 36),
-    "btn_bg":  (12, 32, 38),
-    "btn_bdr": (0, 200, 180),
-    "text_hi": (0, 255, 220),
-    "text_md": (0, 180, 160),
-    "text_lo": (0, 100, 90),
-    "glow":    (0, 255, 220),
-    "sep":     (0, 60, 50),
-    "sel_bg":  (0, 50, 45, 120),
-    "scrollbg":(0, 40, 35),
-    "scrollfg":(0, 180, 160),
-    "folder":  (0, 255, 220),
-    "file":    (0, 180, 160),
+    "bright":  (200, 215, 230),
+    "mid":     (120, 160, 200),
+    "dim":     (60, 85, 115),
+    "dark":    (35, 50, 70),
+    "panel":   (10, 16, 24),
+    "header":  (14, 22, 32),
+    "stripe":  (18, 28, 40),
+    "btn_bg":  (18, 28, 40),
+    "btn_bdr": (120, 160, 200),
+    "text_hi": (200, 215, 230),
+    "text_md": (120, 160, 200),
+    "text_lo": (60, 85, 115),
+    "glow":    (140, 180, 220),
+    "sep":     (40, 55, 75),
+    "sel_bg":  (35, 55, 80, 120),
+    "scrollbg":(20, 30, 45),
+    "scrollfg":(120, 160, 200),
+    "folder":  (200, 215, 230),
+    "file":    (120, 160, 200),
     "danger":  (255, 60, 80),
     "danger_d":(180, 40, 50),
 }
@@ -114,90 +114,137 @@ def _scanlines(w, h, spacing=3, alpha=18):
 # ===================================================================
 
 def draw_window_frame(surface, win, s, p):
-    """Fill the angular window background + border + scanlines.
+    """Fill the window background + border + scanlines.
+    Sci-fi uses rounded rects; ice uses angular cut-corners.
     `p` is the palette dict, `s` is gui_scale."""
     cut = _corner_cut(s)
-    pts = _frame_pts(win, cut)
 
-    # Panel fill
-    pygame.draw.polygon(surface, p["panel"], pts)
+    if not is_ice_theme():
+        # ── Minority-Report style: rounded frosted-glass frame ──
+        br = max(10, int(16 * s))
 
-    # Faint grid dots
-    gx_step = max(12, int(24 * s))
-    for gx in range(win.x + gx_step, win.right, gx_step):
-        for gy in range(win.y + gx_step, win.bottom, gx_step):
-            surface.set_at((gx, gy), (*p["dim"][:3], 30) if len(p["dim"]) == 3 else p["dim"])
+        # Translucent panel fill
+        glass = pygame.Surface((win.width, win.height), pygame.SRCALPHA)
+        pygame.draw.rect(glass, (*p["panel"], 220), (0, 0, win.width, win.height), border_radius=br)
+        surface.blit(glass, win.topleft)
 
-    # Scanlines
-    surface.blit(_scanlines(win.width, win.height), win.topleft)
+        # Inner edge highlight (frosted-glass rim)
+        rim = pygame.Surface((win.width, win.height), pygame.SRCALPHA)
+        pygame.draw.rect(rim, (*p["dim"][:3], 22), (0, 0, win.width, win.height), border_radius=br)
+        m = max(3, int(5 * s))
+        pygame.draw.rect(rim, (0, 0, 0, 22), (m, m, win.width - m*2, win.height - m*2),
+                         border_radius=max(6, br - m))
+        surface.blit(rim, win.topleft)
 
-    # Border
-    bw = max(2, int(3 * s))
-    pygame.draw.polygon(surface, p["bright"], pts, bw)
+        # Scanlines (very faint)
+        surface.blit(_scanlines(win.width, win.height, spacing=4, alpha=10), win.topleft)
 
-    # Corner tick marks (top-left, bottom-right)
-    tk = max(6, int(16 * s))
-    tw = max(1, int(2 * s))
-    pygame.draw.line(surface, p["bright"], (win.x, win.y), (win.x + tk, win.y), tw)
-    pygame.draw.line(surface, p["bright"], (win.x, win.y), (win.x, win.y + tk), tw)
-    pygame.draw.line(surface, p["bright"], (win.right, win.bottom),
-                     (win.right - tk, win.bottom), tw)
-    pygame.draw.line(surface, p["bright"], (win.right, win.bottom),
-                     (win.right, win.bottom - tk), tw)
+        # Rounded border
+        bw = max(1, int(2 * s))
+        pygame.draw.rect(surface, p["mid"], win, width=bw, border_radius=br)
+    else:
+        # ── Ice style: angular cut-corners ──
+        pts = _frame_pts(win, cut)
+        pygame.draw.polygon(surface, p["panel"], pts)
 
-    # Diagonal accent stripes in top-right cut
-    for i in range(1, 5):
-        off = int(cut * i / 5)
-        sx1 = win.right - cut + off
-        sy1 = win.y
-        sx2 = win.right
-        sy2 = win.y + off
-        pygame.draw.line(surface, (*p["dim"][:3], 50) if isinstance(p["dim"], tuple) and len(p["dim"]) == 3 else p["dim"],
-                         (sx1, sy1), (sx2, sy2), 1)
+        # Faint grid dots
+        gx_step = max(12, int(24 * s))
+        for gx in range(win.x + gx_step, win.right, gx_step):
+            for gy in range(win.y + gx_step, win.bottom, gx_step):
+                surface.set_at((gx, gy), (*p["dim"][:3], 30) if len(p["dim"]) == 3 else p["dim"])
+
+        # Scanlines
+        surface.blit(_scanlines(win.width, win.height), win.topleft)
+
+        # Border
+        bw = max(2, int(3 * s))
+        pygame.draw.polygon(surface, p["bright"], pts, bw)
+
+        # Corner tick marks (top-left, bottom-right)
+        tk = max(6, int(16 * s))
+        tw = max(1, int(2 * s))
+        pygame.draw.line(surface, p["bright"], (win.x, win.y), (win.x + tk, win.y), tw)
+        pygame.draw.line(surface, p["bright"], (win.x, win.y), (win.x, win.y + tk), tw)
+        pygame.draw.line(surface, p["bright"], (win.right, win.bottom),
+                         (win.right - tk, win.bottom), tw)
+        pygame.draw.line(surface, p["bright"], (win.right, win.bottom),
+                         (win.right, win.bottom - tk), tw)
+
+        # Diagonal accent stripes in top-right cut
+        for i in range(1, 5):
+            off = int(cut * i / 5)
+            sx1 = win.right - cut + off
+            sy1 = win.y
+            sx2 = win.right
+            sy2 = win.y + off
+            pygame.draw.line(surface, (*p["dim"][:3], 50) if isinstance(p["dim"], tuple) and len(p["dim"]) == 3 else p["dim"],
+                             (sx1, sy1), (sx2, sy2), 1)
 
 
 def draw_header(surface, win, header_h, title_text, s, p):
-    """Draw the angular header bar with title and accent line."""
+    """Draw the header bar with title and accent line.
+    Sci-fi uses rounded top; ice uses angular."""
     cut = _corner_cut(s)
-    hdr_pts = [
-        (win.x, win.y),
-        (win.right - cut, win.y),
-        (win.right, win.y + cut),
-        (win.right, win.y + header_h),
-        (win.x, win.y + header_h),
-    ]
-    pygame.draw.polygon(surface, p["header"], hdr_pts)
 
-    # Accent line under header
-    lw = max(1, int(2 * s))
-    pygame.draw.line(surface, p["bright"], (win.x, win.y + header_h),
-                     (win.right, win.y + header_h), lw)
+    if not is_ice_theme():
+        # ── Minority-Report style: rounded header ──
+        br = max(10, int(16 * s))
+        hdr_rect = pygame.Rect(win.x, win.y, win.width, header_h)
+        hdr_surf = pygame.Surface((win.width, header_h), pygame.SRCALPHA)
+        pygame.draw.rect(hdr_surf, (*p["header"], 200), (0, 0, win.width, header_h),
+                         border_top_left_radius=br, border_top_right_radius=br)
+        surface.blit(hdr_surf, (win.x, win.y))
 
-    # Small animated pulse dot in header
-    t = _time.time()
-    pulse = int(80 + 80 * math.sin(t * 3))
-    dot_x = win.x + int(12 * s)
-    dot_y = win.y + int(14 * s)
-    pygame.draw.circle(surface, (*p["bright"][:3],), (dot_x, dot_y), max(3, int(4 * s)))
-    # Outer ring
-    pygame.draw.circle(surface, (*p["mid"][:3],), (dot_x, dot_y), max(5, int(7 * s)), 1)
+        # Thin divider line under header
+        lw = max(1, int(1 * s))
+        inset = max(8, int(16 * s))
+        pygame.draw.line(surface, (*p["mid"][:3], 120),
+                         (win.x + inset, win.y + header_h),
+                         (win.right - inset, win.y + header_h), lw)
 
-    # Title text
-    title = _f(int(32 * s)).render(title_text, True, p["text_hi"])
-    surface.blit(title, (win.x + int(26 * s), win.y + int(8 * s)))
+        # Small arc accent (Minority Report circular motif)
+        arc_r = max(6, int(10 * s))
+        arc_cx = win.x + int(14 * s)
+        arc_cy = win.y + header_h // 2
+        arc_rect = pygame.Rect(arc_cx - arc_r, arc_cy - arc_r, arc_r * 2, arc_r * 2)
+        pygame.draw.arc(surface, p["mid"], arc_rect,
+                        math.radians(30), math.radians(330), max(1, int(2 * s)))
+
+        # Title text
+        title = _f(int(32 * s)).render(title_text, True, p["text_hi"])
+        surface.blit(title, (win.x + int(30 * s), win.y + int(8 * s)))
+    else:
+        # ── Ice style: angular header ──
+        hdr_pts = [
+            (win.x, win.y),
+            (win.right - cut, win.y),
+            (win.right, win.y + cut),
+            (win.right, win.y + header_h),
+            (win.x, win.y + header_h),
+        ]
+        pygame.draw.polygon(surface, p["header"], hdr_pts)
+
+        # Accent line under header
+        lw = max(1, int(2 * s))
+        pygame.draw.line(surface, p["bright"], (win.x, win.y + header_h),
+                         (win.right, win.y + header_h), lw)
+
+        # Small animated pulse dot in header
+        t = _time.time()
+        pulse = int(80 + 80 * math.sin(t * 3))
+        dot_x = win.x + int(12 * s)
+        dot_y = win.y + int(14 * s)
+        pygame.draw.circle(surface, (*p["bright"][:3],), (dot_x, dot_y), max(3, int(4 * s)))
+        # Outer ring
+        pygame.draw.circle(surface, (*p["mid"][:3],), (dot_x, dot_y), max(5, int(7 * s)), 1)
+
+        # Title text
+        title = _f(int(32 * s)).render(title_text, True, p["text_hi"])
+        surface.blit(title, (win.x + int(26 * s), win.y + int(8 * s)))
 
 
 def draw_angular_button(surface, rect, label, s, p, enabled=True, danger=False):
-    """Draw a small angular button. Returns the rect for hit-testing."""
-    cut = max(4, int(8 * s))
-    pts = [
-        (rect.x, rect.y),
-        (rect.right - cut, rect.y),
-        (rect.right, rect.y + cut),
-        (rect.right, rect.bottom),
-        (rect.x + cut, rect.bottom),
-        (rect.x, rect.bottom - cut),
-    ]
+    """Draw a small button. Rounded for sci-fi, angular for ice. Returns the rect."""
     if danger:
         bg = p["danger_d"] if enabled else (40, 20, 25)
         bdr = p["danger"] if enabled else (80, 40, 50)
@@ -206,28 +253,55 @@ def draw_angular_button(surface, rect, label, s, p, enabled=True, danger=False):
         bg = p["btn_bg"] if enabled else (20, 20, 30)
         bdr = p["btn_bdr"] if enabled else p["dim"]
         txt_c = p["text_hi"] if enabled else p["text_lo"]
-    pygame.draw.polygon(surface, bg, pts)
-    bw = max(1, int(2 * s))
-    pygame.draw.polygon(surface, bdr, pts, bw)
+
+    if not is_ice_theme():
+        # Rounded pill-style button (Minority Report)
+        br = max(4, int(8 * s))
+        pygame.draw.rect(surface, bg, rect, border_radius=br)
+        bw = max(1, int(1 * s))
+        pygame.draw.rect(surface, bdr, rect, width=bw, border_radius=br)
+    else:
+        # Angular cut-corner button (ice)
+        cut = max(4, int(8 * s))
+        pts = [
+            (rect.x, rect.y),
+            (rect.right - cut, rect.y),
+            (rect.right, rect.y + cut),
+            (rect.right, rect.bottom),
+            (rect.x + cut, rect.bottom),
+            (rect.x, rect.bottom - cut),
+        ]
+        pygame.draw.polygon(surface, bg, pts)
+        bw = max(1, int(2 * s))
+        pygame.draw.polygon(surface, bdr, pts, bw)
+
     lbl = _f(int(20 * s)).render(label, True, txt_c)
     surface.blit(lbl, lbl.get_rect(center=rect.center))
     return rect
 
 
 def draw_path_bar(surface, path_text, rect, s, p):
-    """Draw a dark path/breadcrumb bar with angular ends."""
-    cut = max(3, int(6 * s))
-    pts = [
-        (rect.x, rect.y),
-        (rect.right - cut, rect.y),
-        (rect.right, rect.y + cut),
-        (rect.right, rect.bottom),
-        (rect.x + cut, rect.bottom),
-        (rect.x, rect.bottom - cut),
-    ]
-    pygame.draw.polygon(surface, (4, 10, 14), pts)
-    bw = max(1, int(1 * s))
-    pygame.draw.polygon(surface, p["dim"], pts, bw)
+    """Draw a dark path/breadcrumb bar."""
+    if not is_ice_theme():
+        # Rounded (Minority Report)
+        br = max(3, int(6 * s))
+        pygame.draw.rect(surface, (8, 14, 22), rect, border_radius=br)
+        bw = max(1, int(1 * s))
+        pygame.draw.rect(surface, p["dim"], rect, width=bw, border_radius=br)
+    else:
+        # Angular (ice)
+        cut = max(3, int(6 * s))
+        pts = [
+            (rect.x, rect.y),
+            (rect.right - cut, rect.y),
+            (rect.right, rect.y + cut),
+            (rect.right, rect.bottom),
+            (rect.x + cut, rect.bottom),
+            (rect.x, rect.bottom - cut),
+        ]
+        pygame.draw.polygon(surface, (4, 10, 14), pts)
+        bw = max(1, int(1 * s))
+        pygame.draw.polygon(surface, p["dim"], pts, bw)
     font = _f(int(18 * s))
     max_w = rect.width - int(16 * s)
     while font.size(path_text)[0] > max_w and len(path_text) > 20:

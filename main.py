@@ -18,7 +18,7 @@ from state import (
 )
 from renderer import (clamp, draw_cards, draw_wheel, draw_camera_thumbnail,
                       draw_theme_button, theme_button_hit, toggle_theme, get_bg_color,
-                      draw_helix_graph, is_ice_theme, draw_stars_bg)
+                      draw_helix_graph, is_ice_theme, draw_stars_bg, draw_hex_rain)
 from weather_window import WeatherWindow
 from todo_window import TodoWindow
 from sand_window import SandWindow
@@ -292,6 +292,8 @@ class App:
         screen.fill(get_bg_color())
         # Subtle drifting stars on classic theme
         draw_stars_bg(screen)
+        # Scrolling hex rain on sci-fi theme
+        draw_hex_rain(screen, WINDOW_WIDTH, WINDOW_HEIGHT)
 
         # Delta-time for frame-rate independent smoothing
         now = time.time()

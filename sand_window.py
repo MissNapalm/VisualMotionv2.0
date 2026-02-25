@@ -2294,20 +2294,22 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False, splash_dr
         sy, sx = int(seed_ys[si]), int(seed_xs[si])
         if g[sy, sx] != SEED:
             continue
-        # Check all 8 neighbors for water
-        touching_water = False
+        # Check all 8 neighbors for water — collect water cells to consume
+        water_neighbors = []
         for dy in (-1, 0, 1):
             for dx in (-1, 0, 1):
                 if dy == 0 and dx == 0:
                     continue
                 ny2, nx2 = sy + dy, sx + dx
                 if 0 <= ny2 < h and 0 <= nx2 < w and g[ny2, nx2] in _water_set:
-                    touching_water = True
-                    break
-            if touching_water:
-                break
-        if not touching_water:
+                    water_neighbors.append((ny2, nx2))
+        if not water_neighbors:
             continue
+
+        # Consume all adjacent water
+        for wy, wx in water_neighbors:
+            g[wy, wx] = EMPTY
+            c[wy, wx] = 0
 
         # Sprout! Convert seed to plant and create 6 vine tips
         g[sy, sx] = PLANT
@@ -2327,6 +2329,18 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False, splash_dr
     # Tree trunk tips place WOOD going up; when done they spawn canopy tips.
     # Canopy tips place PLANT in a spread pattern.
     if vine_tips is not None:
+        # Helper: absorb water near a growing tip (radius 2)
+        def _absorb_water(cy, cx, radius=2):
+            absorbed = 0
+            for _dy in range(-radius, radius + 1):
+                for _dx in range(-radius, radius + 1):
+                    ay, ax = cy + _dy, cx + _dx
+                    if 0 <= ay < h and 0 <= ax < w and g[ay, ax] in _water_set:
+                        g[ay, ax] = EMPTY
+                        c[ay, ax] = 0
+                        absorbed += 1
+            return absorbed
+
         still_growing = []
         new_tips = []  # tips spawned by finishing trunk tips
         for tip in vine_tips:
@@ -2348,6 +2362,7 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False, splash_dr
                 if cell in (EMPTY, WATER, HOLYWATER, GRASS):
                     g[viy, vix] = WOOD
                     c[viy, vix] = random.choice(_WOOD_COLORS)
+                    _absorb_water(viy, vix)
                 elif cell == WOOD:
                     pass  # already wood, keep growing through
                 else:
@@ -2402,6 +2417,7 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False, splash_dr
                 if cell in (EMPTY, WATER, HOLYWATER, GRASS):
                     g[viy, vix] = WOOD
                     c[viy, vix] = random.choice(_WOOD_COLORS)
+                    _absorb_water(viy, vix)
                 elif cell in (WOOD, PLANT):
                     pass  # grow through existing tree parts
                 else:
@@ -2434,6 +2450,7 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False, splash_dr
                 if cell in (EMPTY, WATER, HOLYWATER, GRASS):
                     g[viy, vix] = PLANT
                     c[viy, vix] = random.choice(_PLANT_COLORS)
+                    _absorb_water(viy, vix)
                 elif cell in (PLANT, WOOD):
                     pass  # keep going through
                 else:
@@ -2453,6 +2470,7 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False, splash_dr
                 if cell in (EMPTY, WATER, HOLYWATER):
                     g[viy, vix] = GRASS
                     c[viy, vix] = random.choice(_GRASS_COLORS)
+                    _absorb_water(viy, vix)
                 elif cell == GRASS:
                     pass  # already grass
                 else:
@@ -2472,6 +2490,7 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False, splash_dr
                 if cell == EMPTY or cell in _water_set:
                     g[viy, vix] = PLANT
                     c[viy, vix] = random.choice(_PLANT_COLORS)
+                    _absorb_water(viy, vix)
                 elif cell == PLANT:
                     pass  # already plant, keep going through
                 else:
@@ -2490,20 +2509,23 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False, splash_dr
         ty, tx = int(ts_ys[ti]), int(ts_xs[ti])
         if g[ty, tx] != TREESEED:
             continue
-        # Check all 8 neighbors for water
-        touching_water = False
+        # Check all 8 neighbors for water — collect water cells to consume
+        water_neighbors = []
         for dy in (-1, 0, 1):
             for dx in (-1, 0, 1):
                 if dy == 0 and dx == 0:
                     continue
                 ny2, nx2 = ty + dy, tx + dx
                 if 0 <= ny2 < h and 0 <= nx2 < w and g[ny2, nx2] in _water_set:
-                    touching_water = True
-                    break
-            if touching_water:
-                break
-        if not touching_water:
+                    water_neighbors.append((ny2, nx2))
+        if not water_neighbors:
             continue
+
+        # Consume all adjacent water
+        for wy, wx in water_neighbors:
+            g[wy, wx] = EMPTY
+            c[wy, wx] = 0
+
         # Sprout! Convert seed to wood (root) and spawn trunk tips
         g[ty, tx] = WOOD
         c[ty, tx] = random.choice(_WOOD_COLORS)
@@ -2531,20 +2553,23 @@ def _step(state, wind_active=False, wind_dir=1, reverse_gravity=False, splash_dr
         gy2, gx2 = int(gs_ys[gi]), int(gs_xs[gi])
         if g[gy2, gx2] != GRASSSEED:
             continue
-        # Check all 8 neighbors for water
-        touching_water = False
+        # Check all 8 neighbors for water — collect water cells to consume
+        water_neighbors = []
         for dy in (-1, 0, 1):
             for dx in (-1, 0, 1):
                 if dy == 0 and dx == 0:
                     continue
                 ny2, nx2 = gy2 + dy, gx2 + dx
                 if 0 <= ny2 < h and 0 <= nx2 < w and g[ny2, nx2] in _water_set:
-                    touching_water = True
-                    break
-            if touching_water:
-                break
-        if not touching_water:
+                    water_neighbors.append((ny2, nx2))
+        if not water_neighbors:
             continue
+
+        # Consume all adjacent water
+        for wy, wx in water_neighbors:
+            g[wy, wx] = EMPTY
+            c[wy, wx] = 0
+
         # Sprout! Convert seed to grass and spawn short upward vine tips
         g[gy2, gx2] = GRASS
         c[gy2, gx2] = random.choice(_GRASS_COLORS)
