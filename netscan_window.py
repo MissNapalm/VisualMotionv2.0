@@ -594,7 +594,7 @@ class NetScanWindow:
         self._scan_btn_rect = pygame.Rect(scan_x, btn_y, btn_w, btn_h)
         if p:
             tc.draw_angular_button(surface, self._scan_btn_rect, scan_label, s, p,
-                                   disabled=self._scanner.scanning)
+                                   enabled=not self._scanner.scanning)
         else:
             col = _DIM if self._scanner.scanning else _CYAN
             pygame.draw.rect(surface, col, self._scan_btn_rect, width=2, border_radius=6)
