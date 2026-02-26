@@ -11,7 +11,7 @@ def pinch_distance(landmarks):
     return math.hypot(a.x - b.x, a.y - b.y)
 
 
-def is_pinching(landmarks, threshold=0.08):
+def is_pinching(landmarks, threshold=0.065):
     return pinch_distance(landmarks) < threshold
 
 
