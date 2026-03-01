@@ -707,6 +707,10 @@ def _get_card_classic(app_name, w, h, gui_scale, is_selected):
 
 def _get_card_scifi(app_name, w, h, gui_scale, is_selected):
     """Render a Minority-Report-inspired translucent glass panel tile."""
+    # Force square cards
+    side = max(w, h)
+    w, h = side, side
+
     pad = int(10 * gui_scale) if is_selected else 0
     sw, sh = w + pad * 2, h + pad * 2
     surf = pygame.Surface((sw, sh), pygame.SRCALPHA)
@@ -714,24 +718,79 @@ def _get_card_scifi(app_name, w, h, gui_scale, is_selected):
 
     # Card body rect
     rx, ry, rw, rh = cx - w // 2, cy - h // 2, w, h
-    br = max(8, int(14 * gui_scale))  # rounded corners — curves, not angular cuts
     line_inset = max(8, int(16 * gui_scale))
+
+    # Chamfer sizes for angular cuts on multiple corners
+    fold = max(18, int(44 * gui_scale))        # large cut (top-right)
+    fold_sm = max(10, int(22 * gui_scale))     # medium cut (bottom-left)
+    fold_xs = max(6, int(14 * gui_scale))      # small cut (top-left, bottom-right)
+
+    # 8-point polygon: square with all four corners cut at different sizes
+    body_pts = [
+        (rx + fold_xs, ry),                    # top-left: small horizontal cut
+        (rx + rw - fold, ry),                  # top-right: large horizontal cut
+        (rx + rw, ry + fold),                  # top-right: large vertical cut
+        (rx + rw, ry + rh - fold_xs),          # bottom-right: small vertical cut
+        (rx + rw - fold_xs, ry + rh),          # bottom-right: small horizontal cut
+        (rx + fold_sm, ry + rh),               # bottom-left: medium horizontal cut
+        (rx, ry + rh - fold_sm),               # bottom-left: medium vertical cut
+        (rx, ry + fold_xs),                    # top-left: small vertical cut
+    ]
 
     # ── 1. Frosted-glass panel body (semi-transparent) ──
     glass_alpha = 190 if is_selected else 165
-    glass_surf = pygame.Surface((rw, rh), pygame.SRCALPHA)
-    pygame.draw.rect(glass_surf, (*_MR_GLASS, glass_alpha), (0, 0, rw, rh), border_radius=br)
-    surf.blit(glass_surf, (rx, ry))
+    glass_surf = pygame.Surface((sw, sh), pygame.SRCALPHA)
+    pygame.draw.polygon(glass_surf, (*_MR_GLASS, glass_alpha), body_pts)
+    surf.blit(glass_surf, (0, 0))
 
     # ── 2. Subtle inner edge highlight (frosted glass rim) ──
     rim_alpha = 25 if is_selected else 15
-    rim_surf = pygame.Surface((rw, rh), pygame.SRCALPHA)
-    pygame.draw.rect(rim_surf, (*_MR_DIM, rim_alpha), (0, 0, rw, rh), border_radius=br)
+    rim_surf = pygame.Surface((sw, sh), pygame.SRCALPHA)
     inner_margin = max(3, int(6 * gui_scale))
-    inner_rect = (inner_margin, inner_margin, rw - inner_margin * 2, rh - inner_margin * 2)
-    inner_br = max(5, br - inner_margin)
-    pygame.draw.rect(rim_surf, (0, 0, 0, rim_alpha), inner_rect, border_radius=inner_br)
-    surf.blit(rim_surf, (rx, ry))
+    inner_fold = max(12, fold - inner_margin)
+    inner_fold_sm = max(6, fold_sm - inner_margin)
+    inner_fold_xs = max(4, fold_xs - inner_margin)
+    m = inner_margin
+    inner_pts = [
+        (rx + m + inner_fold_xs, ry + m),
+        (rx + rw - m - inner_fold, ry + m),
+        (rx + rw - m, ry + m + inner_fold),
+        (rx + rw - m, ry + rh - m - inner_fold_xs),
+        (rx + rw - m - inner_fold_xs, ry + rh - m),
+        (rx + m + inner_fold_sm, ry + rh - m),
+        (rx + m, ry + rh - m - inner_fold_sm),
+        (rx + m, ry + m + inner_fold_xs),
+    ]
+    pygame.draw.polygon(rim_surf, (*_MR_DIM, rim_alpha), body_pts)
+    pygame.draw.polygon(rim_surf, (0, 0, 0, rim_alpha), inner_pts)
+    surf.blit(rim_surf, (0, 0))
+
+    # ── 2b. Diagonal hatch lines on all chamfered corners ──
+    hatch_col = (*_MR_FAINT[:3], 50)
+    # Top-right (large fold)
+    for i in range(1, 5):
+        frac = i / 5.0
+        pygame.draw.line(surf, hatch_col,
+                         (rx + rw - fold + int(fold * frac), ry),
+                         (rx + rw, ry + int(fold * frac)), 1)
+    # Bottom-left (medium fold)
+    for i in range(1, 4):
+        frac = i / 4.0
+        pygame.draw.line(surf, hatch_col,
+                         (rx, ry + rh - fold_sm + int(fold_sm * frac)),
+                         (rx + fold_sm - int(fold_sm * frac), ry + rh), 1)
+    # Top-left (small fold)
+    for i in range(1, 3):
+        frac = i / 3.0
+        pygame.draw.line(surf, hatch_col,
+                         (rx + int(fold_xs * frac), ry),
+                         (rx, ry + int(fold_xs * frac)), 1)
+    # Bottom-right (small fold)
+    for i in range(1, 3):
+        frac = i / 3.0
+        pygame.draw.line(surf, hatch_col,
+                         (rx + rw - int(fold_xs * frac), ry + rh),
+                         (rx + rw, ry + rh - int(fold_xs * frac)), 1)
 
     # ── 3. Thin horizontal divider line (top quarter — separates title zone) ──
     div_y = ry + int(rh * 0.26)
@@ -822,36 +881,36 @@ def _get_card_scifi(app_name, w, h, gui_scale, is_selected):
     dot_r = max(1, int(2 * gui_scale))
     dot_inset = max(6, int(10 * gui_scale))
     dot_col = (*_MR_DIM, 60)
-    for dx, dy in [(rx + dot_inset, ry + dot_inset),
-                   (rx + rw - dot_inset, ry + dot_inset),
-                   (rx + dot_inset, ry + rh - dot_inset),
-                   (rx + rw - dot_inset, ry + rh - dot_inset)]:
+    for dx, dy in [(rx + fold_xs, ry + dot_inset),
+                   (rx + rw - fold, ry + dot_inset),
+                   (rx + fold_sm, ry + rh - dot_inset),
+                   (rx + rw - fold_xs, ry + rh - dot_inset)]:
         pygame.draw.circle(surf, dot_col, (dx, dy), dot_r)
 
-    # ── 10b. Corner bracket motifs (L-shaped accents at each corner) ──
+    # ── 10b. Corner bracket motifs (angled L-accents at chamfers) ──
     cb_len = max(6, int(14 * gui_scale))
     cb_inset = max(4, int(7 * gui_scale))
     cb_col = _MR_BLUE if is_selected else (*_MR_DIM, 80)
-    # top-left
-    pygame.draw.line(surf, cb_col, (rx + cb_inset, ry + cb_inset),
-                     (rx + cb_inset + cb_len, ry + cb_inset), 1)
-    pygame.draw.line(surf, cb_col, (rx + cb_inset, ry + cb_inset),
-                     (rx + cb_inset, ry + cb_inset + cb_len), 1)
-    # top-right
-    pygame.draw.line(surf, cb_col, (rx + rw - cb_inset, ry + cb_inset),
-                     (rx + rw - cb_inset - cb_len, ry + cb_inset), 1)
-    pygame.draw.line(surf, cb_col, (rx + rw - cb_inset, ry + cb_inset),
-                     (rx + rw - cb_inset, ry + cb_inset + cb_len), 1)
-    # bottom-left
-    pygame.draw.line(surf, cb_col, (rx + cb_inset, ry + rh - cb_inset),
-                     (rx + cb_inset + cb_len, ry + rh - cb_inset), 1)
-    pygame.draw.line(surf, cb_col, (rx + cb_inset, ry + rh - cb_inset),
-                     (rx + cb_inset, ry + rh - cb_inset - cb_len), 1)
-    # bottom-right
-    pygame.draw.line(surf, cb_col, (rx + rw - cb_inset, ry + rh - cb_inset),
-                     (rx + rw - cb_inset - cb_len, ry + rh - cb_inset), 1)
-    pygame.draw.line(surf, cb_col, (rx + rw - cb_inset, ry + rh - cb_inset),
-                     (rx + rw - cb_inset, ry + rh - cb_inset - cb_len), 1)
+    # top-left (small chamfer)
+    pygame.draw.line(surf, cb_col, (rx + fold_xs + cb_inset, ry + cb_inset),
+                     (rx + fold_xs + cb_inset + cb_len, ry + cb_inset), 1)
+    pygame.draw.line(surf, cb_col, (rx + cb_inset, ry + fold_xs + cb_inset),
+                     (rx + cb_inset, ry + fold_xs + cb_inset + cb_len), 1)
+    # top-right (large chamfer)
+    pygame.draw.line(surf, cb_col, (rx + rw - fold - cb_inset, ry + cb_inset),
+                     (rx + rw - fold - cb_inset - cb_len, ry + cb_inset), 1)
+    pygame.draw.line(surf, cb_col, (rx + rw - cb_inset, ry + fold + cb_inset),
+                     (rx + rw - cb_inset, ry + fold + cb_inset + cb_len), 1)
+    # bottom-left (medium chamfer)
+    pygame.draw.line(surf, cb_col, (rx + fold_sm + cb_inset, ry + rh - cb_inset),
+                     (rx + fold_sm + cb_inset + cb_len, ry + rh - cb_inset), 1)
+    pygame.draw.line(surf, cb_col, (rx + cb_inset, ry + rh - fold_sm - cb_inset),
+                     (rx + cb_inset, ry + rh - fold_sm - cb_inset - cb_len), 1)
+    # bottom-right (small chamfer)
+    pygame.draw.line(surf, cb_col, (rx + rw - fold_xs - cb_inset, ry + rh - cb_inset),
+                     (rx + rw - fold_xs - cb_inset - cb_len, ry + rh - cb_inset), 1)
+    pygame.draw.line(surf, cb_col, (rx + rw - cb_inset, ry + rh - fold_xs - cb_inset),
+                     (rx + rw - cb_inset, ry + rh - fold_xs - cb_inset - cb_len), 1)
 
     # ── 11. App name in title zone ──
     title_size = max(10, int(22 * gui_scale))
@@ -936,20 +995,27 @@ def _get_card_scifi(app_name, w, h, gui_scale, is_selected):
     surf.blit(hex_img, (rx + rw - hex_img.get_width() - line_inset,
                         stat_y - hex_img.get_height() - int(2 * gui_scale)))
 
-    # ── 16. Thin rounded border ──
+    # ── 16. Polygon border (square with cut corner) ──
     border_color = _MR_BLUE if is_selected else _MR_DIM
     border_w = max(2, int(3 * gui_scale)) if is_selected else max(1, int(1 * gui_scale))
-    pygame.draw.rect(surf, border_color, (rx, ry, rw, rh),
-                     width=border_w, border_radius=br)
+    pygame.draw.polygon(surf, border_color, body_pts, border_w)
 
     # ── 17. Selection outer glow ──
     if is_selected:
         glow_expand = max(3, int(5 * gui_scale))
-        glow_rect = (rx - glow_expand, ry - glow_expand,
-                     rw + glow_expand * 2, rh + glow_expand * 2)
-        glow_br = br + glow_expand
-        pygame.draw.rect(surf, (*_MR_GLOW, 90), glow_rect,
-                         width=max(2, int(3 * gui_scale)), border_radius=glow_br)
+        g = glow_expand
+        glow_pts = [
+            (rx + fold_xs - g, ry - g),
+            (rx + rw - fold + g, ry - g),
+            (rx + rw + g, ry + fold - g),
+            (rx + rw + g, ry + rh - fold_xs + g),
+            (rx + rw - fold_xs + g, ry + rh + g),
+            (rx + fold_sm - g, ry + rh + g),
+            (rx - g, ry + rh - fold_sm + g),
+            (rx - g, ry + fold_xs - g),
+        ]
+        pygame.draw.polygon(surf, (*_MR_GLOW, 90), glow_pts,
+                            max(2, int(3 * gui_scale)))
 
     return surf
 
