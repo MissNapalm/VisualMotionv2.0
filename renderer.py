@@ -1288,10 +1288,10 @@ _HAND_CONNECTIONS = [
 # Finger tip landmark indices, used to colour fingertips differently
 _FINGERTIPS = {4, 8, 12, 16, 20}
 
-_THUMB_COLOR  = (255, 180,  60)   # orange
-_FINGER_COLOR = ( 80, 200, 255)   # cyan
-_PALM_COLOR   = (160, 160, 200)   # muted purple-grey
-_TIP_COLOR    = (255, 255, 100)   # bright yellow dots
+_BONE_COLOR   = (255, 255, 255)   # white — uniform skeleton
+_TIP_COLOR    = (255, 255, 255)   # white dots on fingertips
+_JOINT_COLOR  = (200, 200, 200)   # slightly dimmer for small joints
+_WHEEL_CIRCLE = (  0, 200, 255)   # cyan circle for wheel gesture
 
 
 def draw_skeleton_thumbnail(surface, landmarks, x=None, y=None,
@@ -1336,27 +1336,20 @@ def draw_skeleton_thumbnail(surface, landmarks, x=None, y=None,
         py = y + pad + lm.y * (h - pad * 2)
         return int(px), int(py)
 
-    # Draw bones
+    # Draw bones — all white
     for a, b in _HAND_CONNECTIONS:
         pa, pb = lm_xy(landmarks[a]), lm_xy(landmarks[b])
-        # Palm bar and thumb get a different tint
-        if a in (5, 9, 13) and b in (9, 13, 17):
-            color = _PALM_COLOR
-        elif a <= 4 or b <= 4:
-            color = _THUMB_COLOR
-        else:
-            color = _FINGER_COLOR
-        pygame.draw.line(surface, color, pa, pb, 2)
+        pygame.draw.line(surface, _BONE_COLOR, pa, pb, 2)
 
-    # Draw joint dots
+    # Draw joint dots — all white
     for i, lm in enumerate(landmarks):
         px, py = lm_xy(lm)
         if i in _FINGERTIPS:
             pygame.draw.circle(surface, _TIP_COLOR, (px, py), 4)
         elif i == 0:
-            pygame.draw.circle(surface, _PALM_COLOR, (px, py), 4)
+            pygame.draw.circle(surface, _TIP_COLOR, (px, py), 4)
         else:
-            pygame.draw.circle(surface, _FINGER_COLOR, (px, py), 2)
+            pygame.draw.circle(surface, _JOINT_COLOR, (px, py), 2)
 # ==============================
 # HUD overlay — system data readouts (sci-fi theme only)
 # ==============================
@@ -1556,7 +1549,8 @@ _CAM_THUMB_MARGIN = 12
 _cam_thumb_surf = None   # cached surface for camera thumbnail
 
 
-def draw_camera_thumbnail(surface, frame, window_width, landmarks=None):
+def draw_camera_thumbnail(surface, frame, window_width, landmarks=None,
+                          wheel_active=False):
     """Privacy mode: black panel with white wireframe skeleton, no camera feed."""
     global _cam_thumb_surf
     x = window_width - _CAM_THUMB_W - _CAM_THUMB_MARGIN
@@ -1573,22 +1567,35 @@ def draw_camera_thumbnail(surface, frame, window_width, landmarks=None):
             ay = int(landmarks[a].y * _CAM_THUMB_H)
             bx = int(landmarks[b].x * _CAM_THUMB_W)
             by = int(landmarks[b].y * _CAM_THUMB_H)
-            if a in (5, 9, 13) and b in (9, 13, 17):
-                color = _PALM_COLOR
-            elif a <= 4 or b <= 4:
-                color = _THUMB_COLOR
-            else:
-                color = _FINGER_COLOR
-            pygame.draw.line(thumb_surface, color, (ax, ay), (bx, by), 2)
+            pygame.draw.line(thumb_surface, _BONE_COLOR, (ax, ay), (bx, by), 2)
         for i, lm in enumerate(landmarks):
             px = int(lm.x * _CAM_THUMB_W)
             py = int(lm.y * _CAM_THUMB_H)
             if i in _FINGERTIPS:
                 pygame.draw.circle(thumb_surface, _TIP_COLOR, (px, py), 4)
             elif i == 0:
-                pygame.draw.circle(thumb_surface, _PALM_COLOR, (px, py), 4)
+                pygame.draw.circle(thumb_surface, _TIP_COLOR, (px, py), 4)
             else:
-                pygame.draw.circle(thumb_surface, _FINGER_COLOR, (px, py), 2)
+                pygame.draw.circle(thumb_surface, _JOINT_COLOR, (px, py), 2)
+
+        # Wheel gesture: circle centred on palm, passing through fingertips
+        if wheel_active:
+            # Palm centre = landmark 9 (middle-finger MCP)
+            px = int(landmarks[9].x * _CAM_THUMB_W)
+            py = int(landmarks[9].y * _CAM_THUMB_H)
+            # Radius = average distance from palm to thumb tip & middle tip
+            tx = landmarks[4].x * _CAM_THUMB_W
+            ty = landmarks[4].y * _CAM_THUMB_H
+            mx = landmarks[12].x * _CAM_THUMB_W
+            my = landmarks[12].y * _CAM_THUMB_H
+            d_thumb  = ((tx - px) ** 2 + (ty - py) ** 2) ** 0.5
+            d_middle = ((mx - px) ** 2 + (my - py) ** 2) ** 0.5
+            r = max(int((d_thumb + d_middle) / 2.0), 8)
+            pygame.draw.circle(thumb_surface, _WHEEL_CIRCLE, (px, py), r, 2)
+            # Small dots on thumb + middle tips
+            for dx, dy in ((tx, ty), (mx, my)):
+                pygame.draw.circle(thumb_surface, _WHEEL_CIRCLE,
+                                   (int(dx), int(dy)), 5, 2)
     else:
         msg = _render_text("no hand", 18, (70, 70, 90))
         thumb_surface.blit(msg, msg.get_rect(center=(_CAM_THUMB_W // 2, _CAM_THUMB_H // 2)))

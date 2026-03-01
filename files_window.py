@@ -107,6 +107,7 @@ class FilesWindow:
         # Smooth grid interpolation — tracks smoothed (x, y) per entry index
         self._smooth_pos: dict[int, tuple[float, float]] = {}
         self._smooth_alpha = 0.18  # interpolation speed (0..1, lower = smoother)
+        self._last_cols = 0  # track grid columns for change sound
 
     # ── open / close ────────────────────────────────────────────────
     def open(self):
@@ -429,6 +430,12 @@ class FilesWindow:
         cols = max(1, (win.width - pad * 2) // icon_cell_w)
         grid_w = cols * icon_cell_w
         grid_x0 = win.x + (win.width - grid_w) // 2
+
+        # Play sound when grid column count changes (zoom causes reflow)
+        if self._last_cols != 0 and cols != self._last_cols:
+            if self._snd_whoosh:
+                self._snd_whoosh.play()
+        self._last_cols = cols
 
         # Clip to body area
         clip_rect = pygame.Rect(win.x, body_top, win.width, body_h)

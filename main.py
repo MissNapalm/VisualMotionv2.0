@@ -71,6 +71,13 @@ class App:
         except Exception:
             self._snd_doublepinch = None
             print("Warning: doublepinch.mp3 not found")
+        try:
+            self._snd_zoom = pygame.mixer.Sound("zoom.mp3")
+            self._snd_zoom.set_volume(0.4)
+        except Exception:
+            self._snd_zoom = None
+            print("Warning: zoom.mp3 not found")
+        self._last_zoom_sound_time = 0.0
         self.state = HandState()
         self.tracker = HandTracker()
         self._font_status = pygame.font.Font(None, 48)
@@ -120,6 +127,11 @@ class App:
                 st.gui_scale_target + diff * st.gui_scale_sensitivity,
                 st.gui_scale_min, st.gui_scale_max,
             )
+            # Play zoom sound (throttled to avoid spamming)
+            now = time.time()
+            if abs(diff) > 0.02 and self._snd_zoom and now - self._last_zoom_sound_time > 0.25:
+                self._snd_zoom.play()
+                self._last_zoom_sound_time = now
         st.last_finger_angle = ang
 
     def _process_pinch(self, hand, pinch_now):
@@ -148,22 +160,11 @@ class App:
             if st.last_pinch_x is not None:
                 dx, dy = px - st.last_pinch_x, py - st.last_pinch_y
 
-                # Soft dead zone — scale down small movements instead of killing them
-                if st.pinch_start_pos:
-                    total_drift = math.hypot(px - st.pinch_start_pos[0], py - st.pinch_start_pos[1])
-                    jitter_thresh = 6 if total_drift < st.movement_threshold else 3
-                else:
-                    jitter_thresh = 6
-                adx, ady = abs(dx), abs(dy)
-                # Hard floor: zero out truly sub-pixel noise
-                if adx < 0.8:
+                # Light jitter filter — only kill truly tiny movements
+                if abs(dx) < 0.3:
                     dx = 0.0
-                elif adx < jitter_thresh:
-                    dx *= (adx / jitter_thresh) ** 2
-                if ady < 0.8:
+                if abs(dy) < 0.3:
                     dy = 0.0
-                elif ady < jitter_thresh:
-                    dy *= (ady / jitter_thresh) ** 2
 
                 if not st.scroll_unlocked:
                     if time.time() - st.pinch_hold_start >= st.pinch_hold_delay:
@@ -408,7 +409,8 @@ class App:
 
         # Camera thumbnail top-right
         frame = self.tracker.latest_frame()
-        draw_camera_thumbnail(screen, frame, WINDOW_WIDTH, hand)
+        draw_camera_thumbnail(screen, frame, WINDOW_WIDTH, hand,
+                              wheel_active=st.wheel_active)
 
         if hand:
             tx, ty = self._cur_thumb

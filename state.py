@@ -68,8 +68,8 @@ class FingerSmoother:
 
 class PinchSmoother:
     """Smooths pinch coordinates for scroll/interaction."""
-    def __init__(self, alpha=0.22):
-        self._a = alpha
+    def __init__(self, alpha=0.55):
+        self._a = alpha  # 0.55 = responsive but still filters jitter
         self._x = None
         self._y = None
 
@@ -77,15 +77,8 @@ class PinchSmoother:
         if self._x is None:
             self._x, self._y = x, y
         else:
-            dx = x - self._x
-            dy = y - self._y
-            # Snap to still: if movement is sub-pixel, don't chase it
-            if abs(dx) < 0.5:
-                dx = 0.0
-            if abs(dy) < 0.5:
-                dy = 0.0
-            self._x += self._a * dx
-            self._y += self._a * dy
+            self._x += self._a * (x - self._x)
+            self._y += self._a * (y - self._y)
         return self._x, self._y
 
     def reset(self):
@@ -133,7 +126,6 @@ class HandState:
         self.zoom_progress = 0.0
         self.zoom_target = 0.0
         self.finger_smoother = FingerSmoother()
-        self.pinch_smoother = PinchSmoother()
         self.pinch_smoother = PinchSmoother()
 
         # zoom wheel

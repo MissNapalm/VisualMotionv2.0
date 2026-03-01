@@ -99,21 +99,33 @@ class HandTracker:
             result = self._detector.detect(mp_img)
             landmarks = None
             raw_lm = None
-            if result.hand_landmarks:
-                raw = result.hand_landmarks[0]
-                raw_lm = [_Landmark(l.x, l.y, l.z) for l in raw]
-                # Rolling average over last N frames to stabilise jitter
-                self._history.append(raw_lm)
-                if len(self._history) > self._avg_window:
-                    self._history.pop(0)
-                n = len(self._history)
-                avg = []
-                for j in range(21):
-                    ax = sum(h[j].x for h in self._history) / n
-                    ay = sum(h[j].y for h in self._history) / n
-                    az = sum(h[j].z for h in self._history) / n
-                    avg.append(_Landmark(ax, ay, az))
-                landmarks = avg
+            if result.hand_landmarks and result.handedness:
+                # Only track right hand — find it in the results
+                right_idx = None
+                for i, handedness in enumerate(result.handedness):
+                    # handedness[0].category_name is "Left" or "Right"
+                    # Note: MediaPipe reports mirrored — "Right" in result = user's right hand
+                    if handedness[0].category_name == "Right":
+                        right_idx = i
+                        break
+                if right_idx is not None:
+                    raw = result.hand_landmarks[right_idx]
+                    raw_lm = [_Landmark(l.x, l.y, l.z) for l in raw]
+                    # Rolling average over last N frames to stabilise jitter
+                    self._history.append(raw_lm)
+                    if len(self._history) > self._avg_window:
+                        self._history.pop(0)
+                    n = len(self._history)
+                    avg = []
+                    for j in range(21):
+                        ax = sum(h[j].x for h in self._history) / n
+                        ay = sum(h[j].y for h in self._history) / n
+                        az = sum(h[j].z for h in self._history) / n
+                        avg.append(_Landmark(ax, ay, az))
+                    landmarks = avg
+                else:
+                    # Only left hand visible — ignore
+                    self._history.clear()
             else:
                 self._history.clear()
             with self._lock:
