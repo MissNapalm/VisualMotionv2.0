@@ -799,22 +799,7 @@ def _get_card_scifi(app_name, w, h, gui_scale, is_selected):
     pygame.draw.line(surf, (*line_color, 100),
                      (rx + line_inset, div_y), (rx + rw - line_inset, div_y), lw)
 
-    # ── 4. Small arc accent (circular motif — Minority Report curve) ──
-    arc_r = max(10, int(28 * gui_scale))
-    arc_cx = rx + rw - int(24 * gui_scale)
-    arc_cy = ry + int(20 * gui_scale)
-    arc_color = _MR_BLUE if is_selected else _MR_DIM
-    arc_rect = pygame.Rect(arc_cx - arc_r, arc_cy - arc_r, arc_r * 2, arc_r * 2)
-    pygame.draw.arc(surf, (*arc_color, 90), arc_rect,
-                    math.radians(200), math.radians(340),
-                    max(1, int(2 * gui_scale)))
 
-    # ── 4b. Concentric inner arc (double-ring motif) ──
-    arc_r2 = max(6, int(18 * gui_scale))
-    arc_rect2 = pygame.Rect(arc_cx - arc_r2, arc_cy - arc_r2, arc_r2 * 2, arc_r2 * 2)
-    pygame.draw.arc(surf, (*arc_color, 55), arc_rect2,
-                    math.radians(220), math.radians(320),
-                    max(1, int(1 * gui_scale)))
 
     # ── 5. Second arc (bottom-left, mirror) ──
     arc2_r = max(8, int(20 * gui_scale))
